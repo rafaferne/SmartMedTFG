@@ -6,6 +6,7 @@ import OnboardingForm from "./components/FormRegistro.jsx";
 import { useProfile } from "./hooks/useProfile.js";
 import { Container, Box, Button, Card, CardContent, Typography, Stack, Alert } from "@mui/material";
 import HealthAndSafetyIcon from "@mui/icons-material/HealthAndSafety";
+import UserProfileCard from "./components/userProfileCard.jsx";
 
 const API = import.meta.env.VITE_API_BASE;
 const AUD = import.meta.env.VITE_AUTH0_AUDIENCE;
@@ -15,7 +16,6 @@ export default function App() {
   const { profile, setProfile, loading, refresh } = useProfile();
   const [apiMsg, setApiMsg] = useState("");
 
-  // --- añadidas: llamadas de ejemplo a la API ---
   const callPublic = async () => {
     const res = await fetch(`${API}/ping`);
     setApiMsg(JSON.stringify(await res.json(), null, 2));
@@ -69,14 +69,7 @@ export default function App() {
           <Alert severity="info">Cargando perfil…</Alert>
         ) : isAuthenticated ? (
           profile?.profileComplete ? (
-            <Card>
-              <CardContent>
-                <Typography variant="h6" gutterBottom>Tu perfil</Typography>
-                <Box component="pre" sx={{ m: 0, bgcolor: "#F0F7F4", p: 2, borderRadius: 2, overflow: "auto" }}>
-                  {JSON.stringify(profile, null, 2)}
-                </Box>
-              </CardContent>
-            </Card>
+            <UserProfileCard doc={profile} />
           ) : (
             <OnboardingForm onDone={(u) => setProfile(u)} />
           )

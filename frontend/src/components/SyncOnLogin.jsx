@@ -1,29 +1,22 @@
 import { useEffect } from "react";
 import { useAuth0 } from "@auth0/auth0-react";
-
-const API = import.meta.env.VITE_API_BASE;
-const AUD = import.meta.env.VITE_AUTH0_AUDIENCE;
+import { useApiFetch } from "../lib/apiFetch";
 
 export default function SyncOnLogin({ onSynced }) {
-  const { isAuthenticated, user, getAccessTokenSilently } = useAuth0();
+  const { isAuthenticated, user } = useAuth0();
+  const { apiFetch } = useApiFetch();
 
   useEffect(() => {
     if (!isAuthenticated) return;
+
     (async () => {
       try {
-        const token = await getAccessTokenSilently({
-          authorizationParams: { audience: AUD },
-        });
-        await fetch(`${API}/me/sync`, {
+        await apiFetch("/me/sync", {
           method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
           body: JSON.stringify({
-            email: user?.email,
-            name: user?.name,
-            picture: user?.picture,
+            email: user?.email ?? null,
+            name: user?.name ?? null,
+            picture: user?.picture ?? null,
           }),
         });
         onSynced?.();

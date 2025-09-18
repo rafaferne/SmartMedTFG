@@ -1,15 +1,12 @@
 import { useState } from "react";
-import { useAuth0 } from "@auth0/auth0-react";
+import { useApiFetch } from "../lib/apiFetch";
 import {
   Card, CardContent, CardActions, Button, Grid,
   TextField, MenuItem, Typography, Alert
 } from "@mui/material";
 
-const API = import.meta.env.VITE_API_BASE;
-const AUD = import.meta.env.VITE_AUTH0_AUDIENCE;
-
 export default function OnboardingForm({ onDone }) {
-  const { getAccessTokenSilently } = useAuth0();
+  const { apiFetch } = useApiFetch();
   const [err, setErr] = useState("");
 
   async function submit(e) {
@@ -26,15 +23,8 @@ export default function OnboardingForm({ onDone }) {
     };
 
     try {
-      const token = await getAccessTokenSilently({
-        authorizationParams: { audience: AUD },
-      });
-      const res = await fetch(`${API}/me/profile`, {
+      const res = await apiFetch("/me/profile", {
         method: "PUT",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
         body: JSON.stringify(payload),
       });
       const data = await res.json();
