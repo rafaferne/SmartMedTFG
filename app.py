@@ -29,6 +29,8 @@ def create_app():
     mongo.init_app(app)
     with app.app_context():
         mongo.db.users.create_index("sub", unique=True)
+        mongo.db.measurements.create_index([("sub", 1), ("type", 1), ("ts", 1)])
+
 
     # Blueprints
     from routes import api

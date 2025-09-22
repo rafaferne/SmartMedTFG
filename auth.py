@@ -102,3 +102,48 @@ def requires_auth(f):
         g.current_user = payload
         return f(*args, **kwargs)
     return decorated
+
+
+def _get_permissions_from_token():
+    # Auth0 añade 'permissions' si activaste "Add Permissions in the Access Token"
+    from flask import g
+    perms = (g.current_user or {}).get("permissions")
+    if perms is None:
+        # Si no vienen, será porque no activaste la opción en Auth0
+        # o porque estás usando un token sin audience. Lo tratamos como lista vacía.
+        perms = []
+    return set(perms)
+
+def requires_permission(*required):
+    """Requiere que el token tenga TODOS los permisos indicados."""
+    def wrapper(f):
+        @wraps(f)
+        @requires_auth
+        def decorated(*args, **kwargs):
+            perms = _get_permissions_from_token()
+            missing = [p for p in required if p not in perms]
+            if missing:
+                raise AuthError({
+                    "code": "insufficient_permissions",
+                    "description": f"Faltan permisos: {', '.join(missing)}"
+                }, 403)
+            return f(*args, **kwargs)
+        return decorated
+    return wrapper
+
+def requires_any_permission(*candidates):
+    """Requiere que el token tenga AL MENOS uno de los permisos indicados."""
+    def wrapper(f):
+        @wraps(f)
+        @requires_auth
+        def decorated(*args, **kwargs):
+            perms = _get_permissions_from_token()
+            if not any(p in perms for p in candidates):
+                raise AuthError({
+                    "code": "insufficient_permissions",
+                    "description": f"Se requiere alguno de: {', '.join(candidates)}"
+                }, 403)
+            return f(*args, **kwargs)
+        return decorated
+    return wrapper
+

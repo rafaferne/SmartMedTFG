@@ -7,6 +7,9 @@ import { useProfile } from "./hooks/useProfile.js";
 import { Container, Box, Button, Card, CardContent, Typography, Stack, Alert } from "@mui/material";
 import HealthAndSafetyIcon from "@mui/icons-material/HealthAndSafety";
 import UserProfileCard from "./components/userProfileCard.jsx";
+import { usePermissions } from "./hooks/usePermissions.js";
+import { useApiFetch } from "./lib/apiFetch.js";
+import MetricsChart from "./components/MetricsChart.jsx";
 
 const API = import.meta.env.VITE_API_BASE;
 const AUD = import.meta.env.VITE_AUTH0_AUDIENCE;
@@ -14,6 +17,8 @@ const AUD = import.meta.env.VITE_AUTH0_AUDIENCE;
 export default function App() {
   const { isAuthenticated, loginWithRedirect, getAccessTokenSilently } = useAuth0();
   const { profile, setProfile, loading, refresh } = useProfile();
+  const { has, hasAny, loading: permsLoading } = usePermissions();
+  const { apiFetch } = useApiFetch();
   const [apiMsg, setApiMsg] = useState("");
 
   const callPublic = async () => {
@@ -23,15 +28,11 @@ export default function App() {
 
   const callPrivate = async () => {
     try {
-      const token = await getAccessTokenSilently({
-        authorizationParams: { audience: AUD },
-      });
-      const res = await fetch(`${API}/user`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      setApiMsg(JSON.stringify(await res.json(), null, 2));
+      const res = await apiFetch("/user");
+      const data = await res.json();
+      setApiMsg(JSON.stringify(data, null, 2));
     } catch (e) {
-      setApiMsg(String(e.message || e));
+      setApiMsg(String(e?.message || e));
     }
   };
 
@@ -63,13 +64,22 @@ export default function App() {
           <Button variant="contained" onClick={callPrivate} disabled={!isAuthenticated}>
             Llamar /user (protegido)
           </Button>
+          {isAuthenticated && !permsLoading && has("read:users") && (
+            <Button variant="outlined">Panel Admin</Button>
+          )}
+          {isAuthenticated && !permsLoading && hasAny("read:reports", "read:users") && (
+            <Button variant="text">Ver informes</Button>
+          )}
         </Stack>
 
         {loading ? (
           <Alert severity="info">Cargando perfil…</Alert>
         ) : isAuthenticated ? (
           profile?.profileComplete ? (
+          <>
             <UserProfileCard doc={profile} />
+            <MetricsChart />
+          </>
           ) : (
             <OnboardingForm onDone={(u) => setProfile(u)} />
           )
