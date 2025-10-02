@@ -1,6 +1,5 @@
 from flask import Blueprint, jsonify, request, g
 from datetime import datetime, timedelta
-from auth import requires_auth
 from extensions import mongo
 from auth import requires_auth, requires_permission, requires_any_permission
 
@@ -52,6 +51,7 @@ def me_sync():
         upsert=True,
     )
     return jsonify(ok=True)
+
 
 @api.put("/me/profile")
 @requires_auth

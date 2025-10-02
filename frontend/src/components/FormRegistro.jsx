@@ -56,11 +56,11 @@ export default function OnboardingForm({ onDone }) {
             </Grid>
             <Grid item xs={12} sm={6}>
               <TextField name="height_cm" label="Altura (cm)" type="number"
-                inputProps={{ min: 40, max: 300, step: 0.1 }} required />
+                inputProps={{ min: 40, max: 300, step: 0.1 }} />
             </Grid>
             <Grid item xs={12} sm={6}>
               <TextField name="weight_kg" label="Peso (kg)" type="number"
-                inputProps={{ min: 1, max: 600, step: 0.1 }} required />
+                inputProps={{ min: 1, max: 600, step: 0.1 }} />
             </Grid>
             <Grid item xs={12}>
               <TextField name="notes" label="Notas (opcional)" multiline minRows={3} />

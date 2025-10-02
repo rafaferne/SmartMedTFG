@@ -1,8 +1,10 @@
 import {
   Card, CardHeader, CardContent, CardActions,
-  Avatar, Typography, Chip, Grid, Divider, Stack, Tooltip
+  Avatar, Typography, Chip, Grid, Divider, Stack, Tooltip, Button
 } from "@mui/material";
 import LocalHospitalIcon from "@mui/icons-material/LocalHospital";
+import { useState } from "react";
+import EditProfileDialog from "./EditProfileDialog";
 
 function safeNum(n) {
   const x = Number(n);
@@ -26,8 +28,8 @@ function bmiLabel(bmi) {
   return "Obesidad";
 }
 
-export default function UserProfileCard({ doc }) {
-  // doc viene de /api/me → { sub, email?, name?, picture?, profile, profileComplete, ... }
+export default function UserProfileCard({ doc, onUpdated }) {
+  const [editing, setEditing] = useState(false);
   const p = doc?.profile || {};
   const bmi = calcBMI(p.height_cm, p.weight_kg);
 
@@ -116,7 +118,18 @@ export default function UserProfileCard({ doc }) {
         <Tooltip title={doc?.sub}>
           <Chip label="ID externo" size="small" variant="outlined" />
         </Tooltip>
+        <Button variant="contained" onClick={() => setEditing(true)} sx={{ ml: "auto" }}>
+          Editar perfil
+        </Button>
       </CardActions>
+      <EditProfileDialog
+        open={editing}
+        onClose={() => setEditing(false)}
+        profileDoc={doc}
+        onSaved={(updatedDoc) => {
+          onUpdated?.(updatedDoc);
+        }}
+      />
     </Card>
   );
 }

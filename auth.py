@@ -10,13 +10,13 @@ from jwt.algorithms import RSAAlgorithm
 load_dotenv()
 
 AUTH0_DOMAIN   = os.getenv("AUTH0_DOMAIN", "")
-API_IDENTIFIER = os.getenv("AUTH0_AUDIENCE", "")   # <- CORREGIDO (sin comillas extra)
+API_IDENTIFIER = os.getenv("AUTH0_AUDIENCE", "")
 ALGORITHMS     = ["RS256"]
 
 # Cache simple del JWKS para evitar pedirlo en cada request
 _JWKS_CACHE = {"keys": []}
 _JWKS_TS = 0
-_JWKS_TTL = 600  # 10 minutos
+_JWKS_TTL = 600 
 
 class AuthError(Exception):
     def __init__(self, error, status_code=401):

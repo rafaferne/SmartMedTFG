@@ -21,7 +21,6 @@ export function useProfile() {
         const data = await res.json();
         setProfile(data);
       } else if (res.status === 401) {
-        // Token inválido/expirado incluso tras reintento: no pisamos el perfil
         console.warn("401 en /me; vuelve a iniciar sesión si persiste.");
       } else {
         console.error("Error /me:", res.status);
@@ -35,7 +34,6 @@ export function useProfile() {
 
   useEffect(() => {
     refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated]);
 
   return { profile, setProfile, loading, refresh };

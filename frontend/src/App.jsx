@@ -12,7 +12,6 @@ import { useApiFetch } from "./lib/apiFetch.js";
 import MetricsChart from "./components/MetricsChart.jsx";
 
 const API = import.meta.env.VITE_API_BASE;
-const AUD = import.meta.env.VITE_AUTH0_AUDIENCE;
 
 export default function App() {
   const { isAuthenticated, loginWithRedirect, getAccessTokenSilently } = useAuth0();
@@ -77,7 +76,7 @@ export default function App() {
         ) : isAuthenticated ? (
           profile?.profileComplete ? (
           <>
-            <UserProfileCard doc={profile} />
+            <UserProfileCard doc={profile} onUpdated={setProfile} />
             <MetricsChart />
           </>
           ) : (
