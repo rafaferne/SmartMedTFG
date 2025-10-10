@@ -10,6 +10,8 @@ import UserProfileCard from "./components/userProfileCard.jsx";
 import { usePermissions } from "./hooks/usePermissions.js";
 import { useApiFetch } from "./lib/apiFetch.js";
 import MetricsChart from "./components/MetricsChart.jsx";
+import SleepScorer from "./components/SleepScorer.jsx";
+import ActivityScorer from "./components/ActivityScorer.jsx";
 
 const API = import.meta.env.VITE_API_BASE;
 
@@ -19,6 +21,7 @@ export default function App() {
   const { has, hasAny, loading: permsLoading } = usePermissions();
   const { apiFetch } = useApiFetch();
   const [apiMsg, setApiMsg] = useState("");
+  const [chartReload, setChartReload] = useState(0);
 
   const callPublic = async () => {
     const res = await fetch(`${API}/ping`);
@@ -77,7 +80,10 @@ export default function App() {
           profile?.profileComplete ? (
           <>
             <UserProfileCard doc={profile} onUpdated={setProfile} />
-            <MetricsChart />
+            <MetricsChart reloadToken={chartReload} />
+            {/* Formularios de puntuación (guardan y refrescan la serie) */}
+            <SleepScorer onScored={() => setChartReload(v => v + 1)} />
+            <ActivityScorer onScored={() => setChartReload(v => v + 1)} />
           </>
           ) : (
             <OnboardingForm onDone={(u) => setProfile(u)} />

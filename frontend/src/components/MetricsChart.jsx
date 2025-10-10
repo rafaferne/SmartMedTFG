@@ -44,6 +44,7 @@ export default function MetricsChart({
   defaultMetric = "sleep",
   defaultMinutes = 60,
   pollMs = 5000,
+  reloadToken = 0,
 }) {
   const { apiFetch } = useApiFetch();
   const [metric, setMetric] = useState(defaultMetric);
@@ -76,7 +77,7 @@ export default function MetricsChart({
     const id = setInterval(load, pollMs);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [metric, minutes]);
+  }, [metric, minutes, reloadToken]);
 
   // Eje Y fijo a 1..5, sin decimales
   const yTicks = useMemo(() => [1, 2, 3, 4, 5], []);
