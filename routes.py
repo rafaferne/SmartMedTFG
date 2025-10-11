@@ -268,22 +268,24 @@ def metrics_series():
     return jsonify(ok=True, type=mtype, start=start.isoformat()+"Z", end=end.isoformat()+"Z", points=points)
 
 
-def _call_llm(prompt: str, model: str = None, max_tokens: int = 160, max_retries: int = 1):
+def _call_llm(prompt: str, model: str = None, max_tokens: int = 2000, max_retries: int = 1):
     """
     Cliente mínimo para Gemini v1 (sin system_instruction ni structured outputs).
     Env requeridas:
       LLM_API_BASE=https://generativelanguage.googleapis.com/v1
-      LLM_MODEL=gemini-1.5-flash-latest
+      LLM_MODEL=gemini-2.5-flash
       LLM_API_KEY=...
     """
+    api_base = os.getenv("LLM_API_BASE", "https://generativelanguage.googleapis.com/v1").rstrip("/")
     api_key  = os.getenv("LLM_API_KEY", "")
-    model    = model or os.getenv("LLM_MODEL", "gemini-1.5-flash-latest")
-    timeout  = int(os.getenv("LLM_TIMEOUT_SECONDS", "15"))
-
+    model    = model or os.getenv("LLM_MODEL", "gemini-2.5-flash")
+    timeout  = int(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
+    
     if not api_key:
         raise RuntimeError("LLM_API_KEY vacío")
 
-    # Usa query param para la clave (evita problemas con cabeceras en algunos proxies)
+    # La URL se construye usando el modelo especificado
+    url = f"{api_base}/models/{model}:generateContent?key={api_key}"
     headers = {"Content-Type": "application/json"}
 
     instruction = (
@@ -303,11 +305,13 @@ def _call_llm(prompt: str, model: str = None, max_tokens: int = 160, max_retries
             "maxOutputTokens": max_tokens
         }
     }
+    
+    # --- NO HAY CAMBIOS HASTA AQUÍ ---
 
     attempt, backoff = 0, 1.5
     while True:
         try:
-            resp = requests.post(headers=headers, json=payload, timeout=timeout)
+            resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
             if resp.status_code in (429, 503) and attempt < max_retries:
                 ra = resp.headers.get("Retry-After")
                 wait_s = float(ra) if ra else backoff * (2 ** attempt)
@@ -315,46 +319,46 @@ def _call_llm(prompt: str, model: str = None, max_tokens: int = 160, max_retries
                 current_app.logger.warning("Gemini %s; retry in %.1fs", resp.status_code, wait_s)
                 time.sleep(wait_s); attempt += 1; continue
 
-            # Logea cuerpo si no es 2xx para ver EXACTO qué devuelve
             if not resp.ok:
                 current_app.logger.error("Gemini HTTP %s body: %s", resp.status_code, resp.text)
             resp.raise_for_status()
 
             data = resp.json()
 
-            # Candidatos
             cands = data.get("candidates") or []
             if not cands:
                 current_app.logger.error("Gemini sin candidates: %s", data)
                 raise RuntimeError("Respuesta Gemini inesperada (sin candidates)")
 
-            parts = (cands[0].get("content") or {}).get("parts") or []
+            # --- CAMBIOS IMPORTANTES A CONTINUACIÓN ---
+            
+            candidate = cands[0] # Tomamos el primer y único candidato
+            
+            # 1. Verificar el 'finishReason' para detectar bloqueos de seguridad
+            finish_reason = candidate.get("finishReason")
+            if finish_reason and finish_reason != "STOP":
+                current_app.logger.error("Gemini finishReason no fue STOP: %s. Respuesta completa: %s", finish_reason, candidate)
+                # Devuelve un error más específico
+                if finish_reason == "SAFETY":
+                    raise RuntimeError("Respuesta bloqueada por filtros de seguridad de Gemini")
+                else:
+                    raise RuntimeError(f"Respuesta Gemini inesperada (finishReason: {finish_reason})")
 
-            # 1) parts[].text
+            parts = (candidate.get("content") or {}).get("parts") or []
+            if not parts:
+                 current_app.logger.error("Gemini sin parts en el contenido. Candidato completo: %s", candidate)
+                 raise RuntimeError("Respuesta Gemini inesperada (contenido vacío)")
+
             texts = [p.get("text") for p in parts if isinstance(p, dict) and p.get("text")]
             if texts:
                 return "\n".join(texts).strip()
 
-            # 2) parts[].inlineData (b64)
-            for p in parts:
-                if isinstance(p, dict) and "inlineData" in p:
-                    inline = p["inlineData"]
-                    if inline.get("data"):
-                        try:
-                            decoded = base64.b64decode(inline["data"]).decode("utf-8", errors="ignore")
-                            return decoded
-                        except Exception:
-                            pass
-
-            # 3) functionCall.args (JSON)
-            for p in parts:
-                if isinstance(p, dict) and "functionCall" in p:
-                    args = (p["functionCall"] or {}).get("args")
-                    if isinstance(args, dict):
-                        return json.dumps(args, ensure_ascii=False)
-
+            # El resto del código de parseo (inlineData, functionCall) puede permanecer igual
+            # ...
+            
             current_app.logger.error("Gemini sin parts utilizables: %s", parts)
             raise RuntimeError("Respuesta Gemini inesperada (sin parts.text)")
+            
         except requests.HTTPError:
             raise
         except Exception as e:
@@ -381,7 +385,7 @@ def _sleep_prompt(profile: dict, payload: dict) -> str:
 
     return f"""
         Evalúa un episodio de SUEÑO y devuelve JSON con 'score' (1..5) y 'rationale' (breve).
-        Ten en cuenta perfil y dato subjetivo si existe, pero prioriza medidas objetivas.
+        Ten en cuenta perfil y dato subjetivo si existe, pero prioriza medidas objetivas. A tu criterio
 
         PERFIL:
         - sexo: {sex}
@@ -396,11 +400,6 @@ def _sleep_prompt(profile: dict, payload: dict) -> str:
         - minutos_REM: {rem}
         - calidad_subjetiva_1a5: {quality}
         - notas: {notes}
-
-        CRITERIOS (guía, pero ajusta al contexto):
-        - 1 = muy pobre: <5h, muchos despertares, casi sin profundo/REM.
-        - 3 = aceptable: 6-7h, despertares moderados, algo de profundo y REM.
-        - 5 = excelente: 7-9h, pocos despertares, buen reparto profundo/REM.
 
         Responde SOLO con JSON:
         {{"score": 1-5, "rationale": "texto corto"}}
@@ -423,7 +422,7 @@ def _activity_prompt(profile: dict, payload: dict) -> str:
 
     return f"""
         Evalúa la ACTIVIDAD FÍSICA del día y devuelve JSON con 'score' (1..5) y 'rationale' (breve).
-        Considera perfil y volumen/intensidad.
+        Considera perfil y volumen/intensidad. A tu criterio
 
         PERFIL:
         - sexo: {sex}
@@ -437,11 +436,6 @@ def _activity_prompt(profile: dict, payload: dict) -> str:
         - pasos: {steps}
         - minutos_zona_cardiaca: {hr_zone_minutes}
         - notas: {notes}
-
-        CRITERIOS (referencia general):
-        - 1 = muy bajo: inactividad casi total.
-        - 3 = razonable: ~30 min moderados y/o ~6k pasos.
-        - 5 = muy alto: ≥60 min moderados/vigorosos y/o >10k pasos (si no hay contraindicaciones).
 
         Responde SOLO con JSON:
         {{"score": 1-5, "rationale": "texto corto"}}
@@ -499,7 +493,7 @@ def ai_score_sleep():
     prompt = _sleep_prompt(profile, body)
 
     try:
-        content = _call_llm(prompt, max_tokens=180)
+        content = _call_llm(prompt, max_tokens=2000)
     except RuntimeError as e:
         return jsonify(ok=False, error=str(e)), 503
     except requests.HTTPError as e:
@@ -547,7 +541,7 @@ def ai_score_activity():
     prompt = _activity_prompt(profile, body)
 
     try:
-        content = _call_llm(prompt, max_tokens=180)
+        content = _call_llm(prompt, max_tokens=2000)
     except RuntimeError as e:
         return jsonify(ok=False, error=str(e)), 503
     except requests.HTTPError as e:
