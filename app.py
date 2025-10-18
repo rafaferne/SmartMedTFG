@@ -14,7 +14,6 @@ def create_app():
     app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev")
 
     FRONT = os.getenv("FRONT_ORIGIN", "http://localhost:5173")
-    # CORS robusto (métodos, headers) y válido también en errores
     CORS(app, resources={
         r"/api/*": {
             "origins": [FRONT],
@@ -30,6 +29,9 @@ def create_app():
     with app.app_context():
         mongo.db.users.create_index("sub", unique=True)
         mongo.db.measurements.create_index([("sub", 1), ("type", 1), ("ts", 1)])
+        mongo.db.ai_calls.create_index([("sub", 1), ("type", 1)], unique=True)
+        mongo.db.ai_cache.create_index([("sub", 1), ("type", 1), ("hash", 1)])
+        mongo.db.simulations.create_index([("sub", 1), ("type", 1), ("created_at", -1)])
 
 
     # Blueprints
