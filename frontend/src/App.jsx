@@ -12,14 +12,12 @@ import { useApiFetch } from "./lib/apiFetch.js";
 import MetricsChart from "./components/MetricsChart.jsx";
 import SleepScorer from "./components/SleepScorer.jsx";
 import ActivityScorer from "./components/ActivityScorer.jsx";
-import SimulateInterventions from "./components/SimulateIntervetions.jsx";
-
-
+import SimulateInterventions from "./components/SimulateInterventions.jsx";
 
 const API = import.meta.env.VITE_API_BASE;
 
 export default function App() {
-  const { isAuthenticated, loginWithRedirect, getAccessTokenSilently } = useAuth0();
+  const { isAuthenticated, loginWithRedirect } = useAuth0();
   const { profile, setProfile, loading, refresh } = useProfile();
   const { has, hasAny, loading: permsLoading } = usePermissions();
   const { apiFetch } = useApiFetch();
@@ -81,15 +79,16 @@ export default function App() {
           <Alert severity="info">Cargando perfil…</Alert>
         ) : isAuthenticated ? (
           profile?.profileComplete ? (
-          <>
-            <UserProfileCard doc={profile} onUpdated={setProfile} />
-            <MetricsChart reloadToken={chartReload} />
-            {/* Formularios de puntuación (guardan y refrescan la serie) */}
-            <SleepScorer onScored={() => setChartReload(v => v + 1)} />
-            <ActivityScorer onScored={() => setChartReload(v => v + 1)} />
-            <SimulateInterventions metric="sleep_score" onSimulated={() => setChartReload(v => v + 1)} />
-            <SimulateInterventions metric="activity_score" onSimulated={() => setChartReload(v => v + 1)} />
-          </>
+            <>
+              <UserProfileCard doc={profile} onUpdated={setProfile} />
+              <MetricsChart reloadToken={chartReload} />
+              {/* Formularios de puntuación */}
+              <SleepScorer onScored={() => setChartReload(v => v + 1)} />
+              <ActivityScorer onScored={() => setChartReload(v => v + 1)} />
+              {/* Simulaciones con métricas correctas */}
+              <SimulateInterventions metric="sleep" onSimulated={() => setChartReload(v => v + 1)} />
+              <SimulateInterventions metric="activity" onSimulated={() => setChartReload(v => v + 1)} />
+            </>
           ) : (
             <OnboardingForm onDone={(u) => setProfile(u)} />
           )

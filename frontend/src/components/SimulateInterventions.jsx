@@ -51,7 +51,7 @@ export default function SimulateInterventions({ metric = "sleep", onSimulated })
               value={horizon}
               onChange={e => setHorizon(Math.max(30, Math.min(180, Number(e.target.value) || 60)))}
               fullWidth
-              disabled={loading} 
+              disabled={loading}
             />
           </Grid>
         </Grid>

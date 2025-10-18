@@ -5,38 +5,36 @@ import {
   TextField, Stack, Button, Typography
 } from "@mui/material";
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Legend
 } from "recharts";
 import { useApiFetch } from "../lib/apiFetch";
 
-// 🚦 Solo estas dos métricas (1–5)
 const DEFAULT_METRICS = [
   { value: "sleep",    label: "Sueño" },
   { value: "activity", label: "Actividad física" },
 ];
 
-// Mapea 1..5 a etiquetas cualitativas genéricas
-const SCALE_LABEL = {
-  1: "Muy bajo",
-  2: "Bajo",
-  3: "Medio",
-  4: "Alto",
-  5: "Muy alto",
-};
+const SCALE_LABEL = { 1: "Muy bajo", 2: "Bajo", 3: "Medio", 4: "Alto", 5: "Muy alto" };
 
 function fmtTime(iso) {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  } catch { return iso; }
+  try { return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
+  catch { return iso; }
 }
 
-// Normaliza a entero 1..5 (mantiene nulls para huecos)
 function normalizeDiscrete(v) {
   if (v == null || v === "") return null;
   const n = Number(v);
   if (!Number.isFinite(n)) return null;
   return Math.min(5, Math.max(1, Math.round(n)));
+}
+
+// (opcional) arrastrar último valor para continuidad visual
+function forwardFill(series) {
+  let last = null;
+  return series.map(p => {
+    if (p.value != null) last = p.value;
+    return { ...p, value: p.value ?? last };
+  });
 }
 
 export default function MetricsChart({
@@ -49,11 +47,13 @@ export default function MetricsChart({
   const { apiFetch } = useApiFetch();
   const [metric, setMetric] = useState(defaultMetric);
   const [minutes, setMinutes] = useState(defaultMinutes);
+
   const [data, setData] = useState([]);
+  const [overlay, setOverlay] = useState([]);
+  const [overlayMeta, setOverlayMeta] = useState(null);
+
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
-  const [overlay, setOverlay] = useState([]);
-  const [overlayMeta, setOverlayMeta] = useState([]);
 
   const load = async () => {
     setErr("");
@@ -61,10 +61,11 @@ export default function MetricsChart({
       const res = await apiFetch(`/metrics/series?type=${encodeURIComponent(metric)}&minutes=${minutes}`);
       const json = await res.json();
       if (!res.ok || json.ok === false) throw new Error(json.error || "Error cargando serie");
-      const points = json.points.map(p => ({
+      const points = (json.points || []).map(p => ({
         time: fmtTime(p.t),
         value: normalizeDiscrete(p.v),
       }));
+      // Puedes usar forwardFill(points) si prefieres continuidad
       setData(points);
     } catch (e) {
       setErr(String(e.message || e));
@@ -73,17 +74,15 @@ export default function MetricsChart({
     }
   };
 
-
   const loadOverlay = async () => {
     try {
       const res = await apiFetch(`/simulations/latest?metric=${metric}`);
       const json = await res.json();
       if (res.ok && json.ok) {
-        // Convertimos forecast [{minute,value}] en puntos con ts relativos
         const now = Date.now();
         const points = (json.forecast || []).map(it => ({
-          ts: new Date(now + it.minute * 60 * 1000).toISOString(),
-          value: it.value
+          time: fmtTime(new Date(now + it.minute * 60 * 1000).toISOString()),
+          value: normalizeDiscrete(it.value),
         }));
         setOverlay(points);
         setOverlayMeta({
@@ -96,7 +95,8 @@ export default function MetricsChart({
         setOverlayMeta(null);
       }
     } catch {
-      setOverlay([]); setOverlayMeta(null);
+      setOverlay([]);
+      setOverlayMeta(null);
     }
   };
 
@@ -110,13 +110,25 @@ export default function MetricsChart({
 
   useEffect(() => {
     loadOverlay();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [metric, reloadToken]);
 
-
-
-  // Eje Y fijo a 1..5, sin decimales
-  const yTicks = useMemo(() => [1, 2, 3, 4, 5], []);
-  const yDomain = useMemo(() => [1, 5], []);
+  const merged = useMemo(() => {
+    const map = new Map(); // time -> { time, real, sim }
+    for (const p of data) {
+      const t = p.time;
+      const row = map.get(t) || { time: t, real: null, sim: null };
+      row.real = p.value ?? null;
+      map.set(t, row);
+    }
+    for (const p of overlay) {
+      const t = p.time;
+      const row = map.get(t) || { time: t, real: null, sim: null };
+      row.sim = p.value ?? null;
+      map.set(t, row);
+    }
+    return Array.from(map.values()).sort((a, b) => a.time.localeCompare(b.time));
+  }, [data, overlay]);
 
   return (
     <Card sx={{ mt: 3 }}>
@@ -152,43 +164,65 @@ export default function MetricsChart({
             onChange={e => setMinutes(Math.max(5, Math.min(1440, Number(e.target.value) || 60)))}
           />
           <Button variant="outlined" onClick={load}>Actualizar</Button>
-          {err && <Typography color="error" sx={{ ml: "auto" }}>{err}</Typography>}
+          {err && <Typography color="error" sx={{ ml: { sm: "auto" } }}>{err}</Typography>}
         </Stack>
 
         <ResponsiveContainer width="100%" height={360}>
-          <LineChart data={data}>
+          {/* El gráfico ahora usa "merged" */}
+          <LineChart data={merged}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="time" minTickGap={24} />
-            <YAxis
-              domain={yDomain}
-              ticks={yTicks}
-              allowDecimals={false}
-              tickFormatter={(t) => `${t}`}
-            />
+            <YAxis domain={[1, 5]} ticks={[1, 2, 3, 4, 5]} allowDecimals={false} />
             <Tooltip
-              formatter={(val) => {
-                if (val == null) return ["sin dato", ""];
+              formatter={(val, name) => {
+                if (val == null) return ["sin dato", name === "real" ? "Real" : "Simulación"];
                 const label = SCALE_LABEL[val] || val;
-                return [label, "Nivel"];
+                return [label, name === "real" ? "Real" : "Simulación"];
               }}
               labelFormatter={(label) => `Minuto: ${label}`}
             />
-            {/* Líneas guía opcionales (puedes quitarlas si no te gustan) */}
+            <Legend />
             <ReferenceLine y={3} strokeDasharray="3 3" />
+            {/* Serie real */}
             <Line
+              name="Real"
               type="stepAfter"
-              dataKey="value"
+              dataKey="real"
               dot={false}
-              isAnimationActive={!loading}
-              connectNulls={false} 
               strokeWidth={2}
+              connectNulls
+              isAnimationActive={false}
             />
+            {/* Serie simulada */}
+            {overlay.length > 0 && (
+              <Line
+                name="Simulación"
+                type="stepAfter"
+                dataKey="sim"
+                dot={false}
+                strokeWidth={2}
+                strokeDasharray="6 6"
+                connectNulls
+                isAnimationActive={false}
+              />
+            )}
           </LineChart>
         </ResponsiveContainer>
+
+        {overlayMeta?.interventions?.length > 0 && (
+          <Stack sx={{ mt: 2 }} spacing={0.5}>
+            <Typography variant="subtitle2">Intervenciones sugeridas:</Typography>
+            {overlayMeta.interventions.map((it, idx) => (
+              <Typography key={idx} variant="body2" color="text.secondary">
+                • <strong>{it.title || "Sin título"}</strong> — {it.description || "—"}
+              </Typography>
+            ))}
+          </Stack>
+        )}
       </CardContent>
       <CardActions sx={{ px: 2, pb: 2 }}>
         <Typography variant="caption" color="text.secondary">
-          1 = Muy bajo · 3 = Medio · 5 = Muy alto. Los huecos aparecen como cortes en la línea.
+          1 = Muy bajo · 3 = Medio · 5 = Muy alto. La línea discontinua muestra la proyección.
         </Typography>
       </CardActions>
     </Card>
