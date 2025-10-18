@@ -12,6 +12,9 @@ import { useApiFetch } from "./lib/apiFetch.js";
 import MetricsChart from "./components/MetricsChart.jsx";
 import SleepScorer from "./components/SleepScorer.jsx";
 import ActivityScorer from "./components/ActivityScorer.jsx";
+import SimulateInterventions from "./components/SimulateIntervetions.jsx";
+
+
 
 const API = import.meta.env.VITE_API_BASE;
 
@@ -84,6 +87,8 @@ export default function App() {
             {/* Formularios de puntuación (guardan y refrescan la serie) */}
             <SleepScorer onScored={() => setChartReload(v => v + 1)} />
             <ActivityScorer onScored={() => setChartReload(v => v + 1)} />
+            <SimulateInterventions metric="sleep_score" onSimulated={() => setChartReload(v => v + 1)} />
+            <SimulateInterventions metric="activity_score" onSimulated={() => setChartReload(v => v + 1)} />
           </>
           ) : (
             <OnboardingForm onDone={(u) => setProfile(u)} />

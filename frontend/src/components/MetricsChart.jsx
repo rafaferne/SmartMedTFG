@@ -52,6 +52,8 @@ export default function MetricsChart({
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
+  const [overlay, setOverlay] = useState([]);
+  const [overlayMeta, setOverlayMeta] = useState([]);
 
   const load = async () => {
     setErr("");
@@ -71,6 +73,33 @@ export default function MetricsChart({
     }
   };
 
+
+  const loadOverlay = async () => {
+    try {
+      const res = await apiFetch(`/simulations/latest?metric=${metric}`);
+      const json = await res.json();
+      if (res.ok && json.ok) {
+        // Convertimos forecast [{minute,value}] en puntos con ts relativos
+        const now = Date.now();
+        const points = (json.forecast || []).map(it => ({
+          ts: new Date(now + it.minute * 60 * 1000).toISOString(),
+          value: it.value
+        }));
+        setOverlay(points);
+        setOverlayMeta({
+          created_at: json.created_at,
+          horizon: json.horizon_min,
+          interventions: json.interventions || []
+        });
+      } else {
+        setOverlay([]);
+        setOverlayMeta(null);
+      }
+    } catch {
+      setOverlay([]); setOverlayMeta(null);
+    }
+  };
+
   useEffect(() => {
     setLoading(true);
     load();
@@ -78,6 +107,12 @@ export default function MetricsChart({
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [metric, minutes, reloadToken]);
+
+  useEffect(() => {
+    loadOverlay();
+  }, [metric, reloadToken]);
+
+
 
   // Eje Y fijo a 1..5, sin decimales
   const yTicks = useMemo(() => [1, 2, 3, 4, 5], []);

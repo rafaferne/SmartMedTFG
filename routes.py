@@ -7,6 +7,44 @@ import hashlib, time, base64
 from flask import current_app
 
 
+# --- HELPERS ---
+
+def _fetch_recent_series(sub: str, metric: str, minutes: int = 60):
+    """Últimos N minutos (ordenados por ts ascendente)."""
+    since = datetime.utcnow() - timedelta(minutes=minutes)
+    cur = mongo.db.measurements.find(
+        {"sub": sub, "type": metric, "ts": {"$gte": since}},
+        {"_id": 0, "ts": 1, "value": 1}
+    ).sort("ts", 1)
+    return [{"ts": d["ts"].isoformat() + "Z", "value": int(d["value"])} for d in cur]
+
+def _clamp_1_5(x):
+    try:
+        n = int(round(float(x)))
+    except Exception:
+        return None
+    return max(1, min(5, n))
+
+def _simulate_prompt(metric: str, profile: dict, recent_points: list, horizon_min: int):
+    """Prompt compacto para pedir intervenciones + previsión (1–5)."""
+    sex = profile.get("sex"); h = profile.get("height_cm"); w = profile.get("weight_kg"); b = profile.get("birthdate")
+    recent_str = "; ".join(f'{i}:{p["value"]}' for i, p in enumerate(recent_points[-min(20, len(recent_points)):], 1))
+    return (
+        f"Objetivo: mejorar la métrica '{metric}' (escala 1–5) con intervenciones de bienestar no clínicas.\n"
+        f"Perfil: sex={sex}, height_cm={h}, weight_kg={w}, birthdate={b}\n"
+        f"Histórico reciente (últimos puntos, 1 el más antiguo): {recent_str or 'sin datos'}\n"
+        f"Horizonte simulado: {horizon_min} minutos.\n\n"
+        "Devuelve SOLO JSON con este esquema:\n"
+        "{\n"
+        '  "interventions": [\n'
+        '    {"title":"", "description":"(máx 20 palabras, no clínica)", "category":"habito|sueno|actividad|estres|nutricion", "effort":1},\n'
+        "    ... (1 a 3 elementos)\n"
+        "  ],\n"
+        '  "forecast": [ {"minute": 1, "value": 3}, {"minute": 2, "value": 3}, ... ]  // valores 1..5, longitud = horizonte\n" '
+        "}\n"
+        "No añadas texto fuera del JSON; no des consejos médicos ni diagnósticos."
+    )
+ 
 # Simple cooldown (segundos) por usuario/tipo para no spamear al LLM
 AI_COOLDOWN_SECONDS = int(os.getenv("AI_COOLDOWN_SECONDS", "8"))
 
@@ -566,3 +604,101 @@ def ai_score_activity():
     _store_dedupe(sub, "activity", ph, score)
     ts = _store_scored_point(sub, "activity", score)
     return jsonify(ok=True, type="activity", score=score, ts=ts.isoformat()+"Z", rationale=parsed.get("rationale"))
+
+@api.post("/ai/simulate/<metric>")
+@requires_auth
+def ai_simulate_metric(metric):
+    """
+    metric: 'sleep' | 'activity' (puedes ampliar)
+    body: { "horizon": 60 }   (minutos, opcional: 30..180)
+    """
+    sub = g.current_user.get("sub")
+    body = request.get_json(silent=True) or {}
+    horizon = int(body.get("horizon", 60))
+    horizon = max(30, min(180, horizon))
+
+    # cooldown breve por usuario/métrica para no spamear
+    ok, retry_after = _check_and_touch_cooldown(sub, f"simulate:{metric}")
+    if not ok:
+        return jsonify(ok=False, error="rate_limited", retry_after=retry_after), 429
+
+    # datos de contexto
+    profile = _get_profile_for(sub) or {}
+    recent = _fetch_recent_series(sub, metric, minutes=60)
+
+    prompt = _simulate_prompt(metric, profile, recent, horizon)
+
+    # Llamada al LLM
+    try:
+        content = _call_llm(prompt, max_tokens=10000)
+    except RuntimeError as e:
+        msg = str(e)
+        if msg.startswith("gemini_blocked:"):
+            return jsonify(ok=False, error="llm_blocked", reason=msg.split(":",1)[1]), 422
+        return jsonify(ok=False, error=str(e)), 503
+    except requests.HTTPError as e:
+        if e.response is not None and e.response.status_code == 429:
+            ra = e.response.headers.get("Retry-After")
+            return jsonify(ok=False, error="llm_rate_limited", retry_after=float(ra) if ra else None), 429
+        return jsonify(ok=False, error="llm_http_error", details=getattr(e.response, "text","")), 502
+    except Exception as e:
+        return jsonify(ok=False, error="llm_unavailable", details=str(e)), 503
+
+    # Parseo robusto del JSON
+    try:
+        parsed = json.loads(content)
+    except Exception:
+        m = re.search(r"\{.*\}", content, re.S)
+        if not m:
+            return jsonify(ok=False, error="llm_invalid_json", raw=content), 502
+        parsed = json.loads(m.group(0))
+
+    interventions = parsed.get("interventions") or []
+    forecast = parsed.get("forecast") or []
+
+    # Validar y sanear forecast
+    clean_forecast = []
+    for item in forecast[:horizon]:
+        try:
+            minute = int(item.get("minute"))
+            value = _clamp_1_5(item.get("value"))
+        except Exception:
+            continue
+        if minute < 1 or minute > horizon or value is None:
+            continue
+        clean_forecast.append({"minute": minute, "value": value})
+
+    # Fallback si vacío: prolonga último valor subiendo 1 gradualmente
+    if not clean_forecast:
+        base = recent[-1]["value"] if recent else 3
+        for m in range(1, horizon + 1):
+            v = _clamp_1_5(base + (1 if m > horizon//2 else 0))
+            clean_forecast.append({"minute": m, "value": v})
+
+    doc = {
+        "sub": sub,
+        "type": metric,
+        "created_at": datetime.utcnow(),
+        "horizon_min": horizon,
+        "interventions": interventions[:3],
+        "forecast": clean_forecast
+    }
+    mongo.db.simulations.insert_one(doc)
+
+    return jsonify(ok=True, type=metric, interventions=doc["interventions"], forecast=doc["forecast"])
+
+@api.get("/simulations/latest")
+@requires_auth
+def latest_simulation():
+    sub = g.current_user.get("sub")
+    metric = (request.args.get("metric") or "").strip().lower()
+    if metric not in ("sleep", "activity"):
+        return jsonify(ok=False, error="invalid_metric"), 400
+    doc = mongo.db.simulations.find_one(
+        {"sub": sub, "type": metric},
+        sort=[("created_at", -1)],
+        projection={"_id": 0}
+    )
+    if not doc:
+        return jsonify(ok=False, error="not_found"), 404
+    return jsonify(ok=True, **doc)
