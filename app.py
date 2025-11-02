@@ -28,7 +28,7 @@ def create_app():
     mongo.init_app(app)
     with app.app_context():
         mongo.db.users.create_index("sub", unique=True)
-        mongo.db.measurements.create_index([("sub", 1), ("type", 1), ("ts", 1)])
+        mongo.db.measurements.create_index([("sub",1),("type",1),("ts",1)], unique=True)
         mongo.db.ai_calls.create_index([("sub", 1), ("type", 1)], unique=True)
         mongo.db.ai_cache.create_index([("sub", 1), ("type", 1), ("hash", 1)])
         mongo.db.simulations.create_index([("sub", 1), ("type", 1), ("created_at", -1)])

@@ -1,105 +1,113 @@
 import { useState } from "react";
-import { useAuth0 } from "@auth0/auth0-react";
-import Header from "./components/header.jsx";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+import Layout from "./layout/Layout.jsx";
 import SyncOnLogin from "./components/SyncOnLogin.jsx";
+import { useAuth0 } from "@auth0/auth0-react";
+import { Container, Alert, Tabs, Tab, Box } from "@mui/material";
+import UserProfileCard from "./components/userProfileCard.jsx";
 import OnboardingForm from "./components/FormRegistro.jsx";
 import { useProfile } from "./hooks/useProfile.js";
-import { Container, Box, Button, Card, CardContent, Typography, Stack, Alert } from "@mui/material";
-import HealthAndSafetyIcon from "@mui/icons-material/HealthAndSafety";
-import UserProfileCard from "./components/userProfileCard.jsx";
-import { usePermissions } from "./hooks/usePermissions.js";
-import { useApiFetch } from "./lib/apiFetch.js";
-import MetricsChart from "./components/MetricsChart.jsx";
-import SleepScorer from "./components/SleepScorer.jsx";
-import ActivityScorer from "./components/ActivityScorer.jsx";
+import MetricsTabs from "./components/MetricsTabs.jsx";
+import SimulationRadar from "./components/SimulationRadar.jsx";
 import SimulateInterventions from "./components/SimulateInterventions.jsx";
 
-const API = import.meta.env.VITE_API_BASE;
+const METRICS = [
+  { value: "sleep",    label: "Sueño" },
+  { value: "activity", label: "Actividad física" },
+  { value: "stress",   label: "Estrés" },
+];
 
-export default function App() {
-  const { isAuthenticated, loginWithRedirect } = useAuth0();
-  const { profile, setProfile, loading, refresh } = useProfile();
-  const { has, hasAny, loading: permsLoading } = usePermissions();
-  const { apiFetch } = useApiFetch();
-  const [apiMsg, setApiMsg] = useState("");
-  const [chartReload, setChartReload] = useState(0);
+function Dashboard() {
+  return (
+    <Container maxWidth="lg">
+      <Alert severity="success">Bienvenido a SmartMed</Alert>
+    </Container>
+  );
+}
 
-  const callPublic = async () => {
-    const res = await fetch(`${API}/ping`);
-    setApiMsg(JSON.stringify(await res.json(), null, 2));
-  };
+function Perfil() {
+  const { isAuthenticated } = useAuth0();
+  const { profile, setProfile, loading } = useProfile();
+  if (!isAuthenticated) return <Alert severity="info">Inicia sesión para ver tu perfil.</Alert>;
+  if (loading) return <Alert severity="info">Cargando…</Alert>;
+  return profile?.profileComplete
+    ? <UserProfileCard doc={profile} onUpdated={setProfile} />
+    : <OnboardingForm onDone={(u) => setProfile(u)} />;
+}
 
-  const callPrivate = async () => {
-    try {
-      const res = await apiFetch("/user");
-      const data = await res.json();
-      setApiMsg(JSON.stringify(data, null, 2));
-    } catch (e) {
-      setApiMsg(String(e?.message || e));
-    }
-  };
+function Metricas() {
+  // La vista de métricas queda igual que estaba: MetricsTabs se encarga de todo
+  return (
+    <Container maxWidth="lg">
+      <MetricsTabs />
+    </Container>
+  );
+}
+
+function Simulacion() {
+  // ✅ En simulación ya no usamos MetricsTabs (que pintaba gráficas/tablas de métricas)
+  //    Solo pestañas locales para elegir la métrica activa y mostrar Radar + Simulación.
+  const [activeMetric, setActiveMetric] = useState("sleep");
+  const [reload, setReload] = useState(0);
+
+  // pestañas locales (solo sleep / stress para simulación)
+  const simTabs = [
+    { value: "sleep",  label: "Sueño" },
+    { value: "stress", label: "Estrés" },
+  ];
+
+  const handleTab = (_e, v) => { if (v !== null) setActiveMetric(v); };
 
   return (
-    <>
-      <Header />
-      <SyncOnLogin onSynced={refresh} />
+    <Container maxWidth="lg">
+      <Box sx={{ borderBottom: 1, borderColor: "divider", mb: 2 }}>
+        <Tabs
+          value={activeMetric}
+          onChange={handleTab}
+          variant="scrollable"
+          scrollButtons="auto"
+        >
+          {simTabs.map(t => (
+            <Tab key={t.value} value={t.value} label={t.label} />
+          ))}
+        </Tabs>
+      </Box>
 
-      <Container maxWidth="lg" sx={{ py: 4 }}>
-        <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 2 }}>
-          <HealthAndSafetyIcon color="primary" />
-          <Typography variant="h4" color="primary.dark">Panel de SmartMed</Typography>
-        </Stack>
+      {/* 🔵 Malla radar de simulación: solo métricas de simulación */}
+      <SimulationRadar
+        metrics={simTabs.map(m => m.value)}   // ["sleep","stress"]
+        reloadToken={reload}
+        activeMetric={activeMetric}
+        onReset={() => setReload(v => v + 1)}
+      />
 
-        {!isAuthenticated && (
-          <Card sx={{ mb: 3 }}>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>Bienvenido</Typography>
-              <Typography variant="body1" sx={{ mb: 2 }}>
-                Inicia sesión para ver o completar tu perfil médico.
-              </Typography>
-              <Button variant="contained" onClick={() => loginWithRedirect()}>Iniciar sesión</Button>
-            </CardContent>
-          </Card>
-        )}
+      {/* 🟣 Tarjeta para lanzar simulación del histórico de la métrica activa */}
+      <SimulateInterventions
+        metric={activeMetric}
+        title={`Simulación — ${simTabs.find(x => x.value === activeMetric)?.label || activeMetric}`}
+        onDone={() => setReload(v => v + 1)}
+      />
+    </Container>
+  );
+}
 
-        <Stack direction="row" spacing={2} sx={{ mb: 2 }}>
-          <Button variant="outlined" onClick={callPublic}>Ping público</Button>
-          <Button variant="contained" onClick={callPrivate} disabled={!isAuthenticated}>
-            Llamar /user (protegido)
-          </Button>
-          {isAuthenticated && !permsLoading && has("read:users") && (
-            <Button variant="outlined">Panel Admin</Button>
-          )}
-          {isAuthenticated && !permsLoading && hasAny("read:reports", "read:users") && (
-            <Button variant="text">Ver informes</Button>
-          )}
-        </Stack>
+function Admin() { return <Alert severity="info">Zona admin.</Alert>; }
+function NotFound() { return <Alert severity="warning">Página no encontrada</Alert>; }
 
-        {loading ? (
-          <Alert severity="info">Cargando perfil…</Alert>
-        ) : isAuthenticated ? (
-          profile?.profileComplete ? (
-            <>
-              <UserProfileCard doc={profile} onUpdated={setProfile} />
-              <MetricsChart reloadToken={chartReload} />
-              {/* Formularios de puntuación */}
-              <SleepScorer onScored={() => setChartReload(v => v + 1)} />
-              <ActivityScorer onScored={() => setChartReload(v => v + 1)} />
-              {/* Simulaciones con métricas correctas */}
-              <SimulateInterventions metric="sleep" onSimulated={() => setChartReload(v => v + 1)} />
-              <SimulateInterventions metric="activity" onSimulated={() => setChartReload(v => v + 1)} />
-            </>
-          ) : (
-            <OnboardingForm onDone={(u) => setProfile(u)} />
-          )
-        ) : null}
-
-        {apiMsg && (
-          <Box component="pre" sx={{ mt: 3, bgcolor: "#EEF8F2", p: 2, borderRadius: 2 }}>
-            {apiMsg}
-          </Box>
-        )}
-      </Container>
-    </>
+export default function App() {
+  return (
+    <BrowserRouter>
+      <SyncOnLogin />
+      <Routes>
+        <Route element={<Layout />}>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/perfil" element={<Perfil />} />
+          <Route path="/metricas" element={<Metricas />} />
+          <Route path="/simulacion" element={<Simulacion />} />
+          <Route path="/admin" element={<Admin />} />
+          <Route path="*" element={<NotFound />} />
+        </Route>
+      </Routes>
+    </BrowserRouter>
   );
 }

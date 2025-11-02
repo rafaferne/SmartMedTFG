@@ -1,36 +1,42 @@
 import { useState } from "react";
 import {
   Card, CardHeader, CardContent, CardActions,
-  Button, TextField, Grid, Alert, List, ListItem, ListItemText, CircularProgress
+  Button, Stack, Typography, Alert, LinearProgress, Divider
 } from "@mui/material";
 import { useApiFetch } from "../lib/apiFetch";
 
-export default function SimulateInterventions({ metric = "sleep", onSimulated }) {
+export default function SimulateInterventions({
+  metric = "sleep",
+  title = "Simulación",
+  onDone,
+}) {
   const { apiFetch } = useApiFetch();
-  const [horizon, setHorizon] = useState(60);
-  const [msg, setMsg] = useState(null);
-  const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const [last, setLast] = useState(null);
 
-  const run = async () => {
-    if (loading) return;
+  const runSimulation = async () => {
     setLoading(true);
     setMsg(null);
-
     try {
-      const res = await apiFetch(`/ai/simulate/${metric}`, {
+      const res = await apiFetch(`/ai/simulate/${encodeURIComponent(metric)}`, {
         method: "POST",
-        body: JSON.stringify({ horizon }),
+        body: { scope: "all" },
       });
-      const data = await res.json();
+      const json = await res.json();
 
-      if (!res.ok || data.ok === false) {
-        throw new Error(data.error || "Error simulando intervenciones");
+      if (!res.ok || json.ok === false) {
+        setLast(null);
+        setMsg({
+          type: "error",
+          text: json.error || "Error generando simulación (IA)",
+        });
+        return;
       }
 
-      setItems(data.interventions || []);
-      setMsg({ type: "success", text: `Simulación creada (${metric})` });
-      onSimulated?.();
+      setLast(json);
+      setMsg({ type: "success", text: "Simulación generada con intervención de la IA." });
+      onDone?.(json);
     } catch (e) {
       setMsg({ type: "error", text: String(e.message || e) });
     } finally {
@@ -40,45 +46,33 @@ export default function SimulateInterventions({ metric = "sleep", onSimulated })
 
   return (
     <Card sx={{ mt: 3 }}>
-      <CardHeader title={`Simular intervenciones (${metric})`} />
+      <CardHeader
+        title={title}
+        subheader="Genera una simulación alineada a cada fecha/hora con datos reales (sólo con intervenciones de IA)."
+      />
       <CardContent>
-        {msg && <Alert severity={msg.type} sx={{ mb: 2 }}>{msg.text}</Alert>}
-        <Grid container spacing={2}>
-          <Grid item xs={12} sm={4}>
-            <TextField
-              label="Horizonte (min)"
-              type="number"
-              value={horizon}
-              onChange={e => setHorizon(Math.max(30, Math.min(180, Number(e.target.value) || 60)))}
-              fullWidth
-              disabled={loading}
-            />
-          </Grid>
-        </Grid>
-        {items.length > 0 && (
-          <>
-            <h4 style={{ marginTop: 16 }}>Intervenciones propuestas</h4>
-            <List dense>
-              {items.map((it, i) => (
-                <ListItem key={i}>
-                  <ListItemText
-                    primary={`${it.title || "(sin título)"}  ·  [${it.category || "general"} · esfuerzo ${it.effort ?? "?"}]`}
-                    secondary={it.description}
-                  />
-                </ListItem>
-              ))}
-            </List>
-          </>
+        {loading && <LinearProgress sx={{ mb: 2 }} />}
+        {msg && <Alert severity={msg.type} sx={{ mb: 2, whiteSpace: 'pre-wrap' }}>{msg.text}</Alert>}
+
+        {last ? (
+          <Stack spacing={1} sx={{ mb: 1 }}>
+            {last.forecast_mode === "absolute_ts" && (
+              <Typography variant="body2" color="text.secondary">
+                Rango simulado: {new Date(last.start_ts).toLocaleString()} — {new Date(last.end_ts).toLocaleString()}
+              </Typography>
+            )}
+
+            <Divider sx={{ my: 1 }} />
+          </Stack>
+        ) : (
+          <Typography variant="body2" color="text.secondary">
+            Aún no has generado una simulación para “{metric}”.
+          </Typography>
         )}
       </CardContent>
-      <CardActions sx={{ pb: 2, px: 2 }}>
-        <Button
-          variant="contained"
-          onClick={run}
-          disabled={loading}
-          startIcon={loading ? <CircularProgress size={18} /> : null}
-        >
-          {loading ? "Simulando..." : "Simular ahora"}
+      <CardActions>
+        <Button variant="contained" onClick={runSimulation} disabled={loading}>
+          Generar simulación (todo el histórico)
         </Button>
       </CardActions>
     </Card>
