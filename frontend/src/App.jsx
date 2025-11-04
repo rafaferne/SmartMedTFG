@@ -36,7 +36,7 @@ function Perfil() {
 }
 
 function Metricas() {
-  // La vista de métricas queda igual que estaba: MetricsTabs se encarga de todo
+  // La vista de métricas queda igual: MetricsTabs se encarga de todo
   return (
     <Container maxWidth="lg">
       <MetricsTabs />
@@ -45,15 +45,14 @@ function Metricas() {
 }
 
 function Simulacion() {
-  // ✅ En simulación ya no usamos MetricsTabs (que pintaba gráficas/tablas de métricas)
-  //    Solo pestañas locales para elegir la métrica activa y mostrar Radar + Simulación.
+  // Ahora incluimos Actividad física como métrica simulable
   const [activeMetric, setActiveMetric] = useState("sleep");
   const [reload, setReload] = useState(0);
 
-  // pestañas locales (solo sleep / stress para simulación)
   const simTabs = [
-    { value: "sleep",  label: "Sueño" },
-    { value: "stress", label: "Estrés" },
+    { value: "sleep",    label: "Sueño" },
+    { value: "activity", label: "Actividad física" }, // ⬅️ añadido
+    { value: "stress",   label: "Estrés" },
   ];
 
   const handleTab = (_e, v) => { if (v !== null) setActiveMetric(v); };
@@ -73,15 +72,15 @@ function Simulacion() {
         </Tabs>
       </Box>
 
-      {/* 🔵 Malla radar de simulación: solo métricas de simulación */}
+      {/* Radar: pasa las métricas visibles en simulación */}
       <SimulationRadar
-        metrics={simTabs.map(m => m.value)}   // ["sleep","stress"]
+        metrics={simTabs.map(m => m.value)} // ["sleep","activity","stress"]
         reloadToken={reload}
         activeMetric={activeMetric}
         onReset={() => setReload(v => v + 1)}
       />
 
-      {/* 🟣 Tarjeta para lanzar simulación del histórico de la métrica activa */}
+      {/* Tarjeta para lanzar la simulación del histórico de la métrica activa */}
       <SimulateInterventions
         metric={activeMetric}
         title={`Simulación — ${simTabs.find(x => x.value === activeMetric)?.label || activeMetric}`}

@@ -86,6 +86,164 @@ def _gemini_generate_json(prompt: str, max_tokens: int = 30000, temperature: flo
         return _extract_json(txt)
     except Exception as e:
         raise RuntimeError(f"JSON inválido de Gemini: {e}")
+    
+# ---------- Helpers específicos de actividad (UserExercise) ----------
+
+def _to_float(s):
+    try:
+        return float(str(s).replace(",", "."))
+    except Exception:
+        return None
+
+def _secs_between(start_str: str, end_str: str) -> Optional[float]:
+    t1 = _parse_any_datetime(start_str)
+    t2 = _parse_any_datetime(end_str)
+    if not t1 or not t2:
+        return None
+    return max(0.0, (t2 - t1).total_seconds())
+
+def _is_userexercise_headers(headers_lower: List[str]) -> bool:
+    # Heurística: presencia de campos típicos del export "UserExercise"
+    keys = set(headers_lower)
+    must_any = [
+        "exerciseid", "starttime","exercise_end" "activityname",
+        "steps", "calories", "distance", "avghr", "averageheartrate",
+        "maxhr", "maxheartrate",
+        "minutesactive", "active_minutes", "mvpa_minutes",
+        "metminutes", "met_min", "metmins",
+        "duration", "durationsec", "duration_ms"
+    ]
+    # Con 2 o más claves típicas ya consideramos que es UserExercise
+    hits = sum(1 for k in must_any if k in keys)
+    return hits >= 2
+
+
+def _norm_key(k: str) -> str:
+    return " ".join(str(k).split()).strip()
+
+def _aggregate_userexercise_daily(reader: csv.DictReader) -> Dict[datetime, Dict[str, Any]]:
+    """
+    Agrega un CSV de UserExercise a nivel diario.
+    Estrategia:
+      - sumas: steps, calories, distance (km), met_minutes, minutes_active, duration_min
+      - medias: avg_hr, max_hr si llegan por fila
+    """
+    headers = [h for h in (reader.fieldnames or [])]
+    lower = [h.lower().strip() for h in headers]
+
+    # Localiza columnas típicas (tolerante a nombres)
+    def pick(*cands):
+        for c in cands:
+            if c in lower:
+                return headers[lower.index(c)]
+        return None
+
+    col_start = pick("starttime", "start_time", "inicio", "datetime", "time", "date")
+    col_end   = pick("endtime", "end_time", "fin", "exercise_end")
+    col_steps = pick("steps", "stepcount", "total_steps")
+    col_cal   = pick("calories", "energy", "kcal", "energykcal")
+    col_dist  = pick("distance", "distance_km", "distancia", "distance_m")
+    col_avgHR = pick("avghr", "averageheartrate", "avg_hr", "hr_avg")
+    col_maxHR = pick("maxhr", "maxheartrate", "hr_max")
+    col_met   = pick("metminutes", "met_min", "metmins")
+    col_actm  = pick("minutesactive", "active_minutes", "mvpa_minutes", "mins_active")
+    col_dur   = pick("duration", "durationsec", "duration_ms")  # si no, calculamos con start/end
+
+    agg: Dict[datetime, Dict[str, Any]] = {}
+    def day_bucket(ts: datetime) -> datetime:
+        return datetime(ts.year, ts.month, ts.day)
+
+    for row in reader:
+        # Fecha base: start_time si existe; si no, intenta cualquier timestamp
+        ts0 = None
+        if col_start and row.get(col_start):
+            ts0 = _parse_any_datetime(row[col_start])
+        if not ts0:
+            # fallback: usa end_time o cualquier campo fecha
+            any_ts = row.get(col_end) or row.get(col_start) or row.get(col_dur) or ""
+            ts0 = _parse_any_datetime(any_ts) or _now_utc()
+
+        d = day_bucket(ts0)
+        if d not in agg:
+            agg[d] = {
+                "sums": {
+                    "steps": 0.0, "calories_kcal": 0.0, "distance_km": 0.0,
+                    "met_minutes": 0.0, "active_minutes": 0.0, "duration_min": 0.0
+                },
+                "hr_sum": 0.0, "hr_cnt": 0,
+                "hrmax_sum": 0.0, "hrmax_cnt": 0,
+                "samples": 0
+            }
+        st = agg[d]
+        st["samples"] += 1
+
+        # Sumas directas
+        if col_steps:
+            v = _to_float(row.get(col_steps))
+            if v is not None: st["sums"]["steps"] += v
+
+        if col_cal:
+            v = _to_float(row.get(col_cal))
+            if v is not None: st["sums"]["calories_kcal"] += v
+
+        if col_dist:
+            v = _to_float(row.get(col_dist))
+            if v is not None:
+                # Si parece metros, pásalo a km (umbral heurístico)
+                st["sums"]["distance_km"] += v / 1000.0 if v > 100 else v
+
+        if col_met:
+            v = _to_float(row.get(col_met))
+            if v is not None: st["sums"]["met_minutes"] += v
+
+        if col_actm:
+            v = _to_float(row.get(col_actm))
+            if v is not None: st["sums"]["active_minutes"] += v
+
+        # Duración: usa duración informada; si no, calcula con start/end
+        dur_min = None
+        if col_dur and row.get(col_dur):
+            v = _to_float(row.get(col_dur))
+            if v is not None:
+                # si parece en ms o s, normaliza a minutos
+                if v > 10000:     # ms
+                    dur_min = v / 60000.0
+                elif v > 300:     # s
+                    dur_min = v / 60.0
+                else:             # ya en minutos
+                    dur_min = v
+        if dur_min is None and col_start and col_end and row.get(col_start) and row.get(col_end):
+            secs = _secs_between(row.get(col_start), row.get(col_end))
+            if secs is not None:
+                dur_min = secs / 60.0
+        if dur_min is not None:
+            st["sums"]["duration_min"] += max(0.0, dur_min)
+
+        # Medias de FC
+        if col_avgHR:
+            v = _to_float(row.get(col_avgHR))
+            if v is not None:
+                st["hr_sum"] += v
+                st["hr_cnt"] += 1
+
+        if col_maxHR:
+            v = _to_float(row.get(col_maxHR))
+            if v is not None:
+                st["hrmax_sum"] += v
+                st["hrmax_cnt"] += 1
+
+    # Construye features finales por día
+    out: Dict[datetime, Dict[str, Any]] = {}
+    for d, st in agg.items():
+        feats = dict(st["sums"])
+        if st["hr_cnt"] > 0:
+            feats["avg_hr"] = round(st["hr_sum"] / st["hr_cnt"], 3)
+        if st["hrmax_cnt"] > 0:
+            feats["max_hr"] = round(st["hrmax_sum"] / st["hrmax_cnt"], 3)
+        feats["samples"] = int(st["samples"])
+        out[d] = feats
+    return out
+
 
 # ---------------- Perfil ----------------
 
@@ -217,13 +375,15 @@ def metrics_detail():
     if not meas:
         return _json_err("No existe medición en ese instante", 404)
 
-    # Devuelve features del RAW correspondiente
+    # Devuelve features del RAW correspondiente (añadimos activity_raw)
     features = None
     raw = None
     if mtype == "sleep":
         raw = mongo.db.sleep_raw.find_one({"sub": sub, "ts": ts}, projection={"_id": 0, "features": 1})
     elif mtype == "stress":
         raw = mongo.db.stress_raw.find_one({"sub": sub, "ts": ts}, projection={"_id": 0, "features": 1})
+    elif mtype == "activity":
+        raw = mongo.db.activity_raw.find_one({"sub": sub, "ts": ts}, projection={"_id": 0, "features": 1})
     if raw and isinstance(raw.get("features"), dict):
         features = raw["features"]
 
@@ -266,6 +426,8 @@ def metrics_detail_by_date():
         raw = mongo.db.sleep_raw.find_one({"sub": sub, "ts": {"$gte": start, "$lte": end}}, projection={"_id": 0, "features": 1})
     elif mtype == "stress":
         raw = mongo.db.stress_raw.find_one({"sub": sub, "ts": {"$gte": start, "$lte": end}}, projection={"_id": 0, "features": 1})
+    elif mtype == "activity":
+        raw = mongo.db.activity_raw.find_one({"sub": sub, "ts": {"$gte": start, "$lte": end}}, projection={"_id": 0, "features": 1})
     if raw and isinstance(raw.get("features"), dict):
         features = raw["features"]
 
@@ -405,7 +567,7 @@ def simulations_delete():
 @requires_auth
 def ai_simulate_metric(metric: str):
     """
-    Gemelo digital (sleep/stress):
+    Gemelo digital (sleep/stress/activity):
       - Por cada fecha con medición real: pide 3 intervenciones específicas del día y simula 'after_score'.
       - Guarda: ts, base, value(sim), delta, rationale, interventions.
     """
@@ -420,9 +582,17 @@ def ai_simulate_metric(metric: str):
     if not real_rows:
         return _json_err("No hay datos históricos para simular", 404)
 
-    # Features por ts desde RAW
+    # Features por ts desde RAW (añadimos activity_raw)
     features_by_ts: Dict[str, Dict[str, Any]] = {}
-    raw_col = mongo.db.sleep_raw if metric == "sleep" else mongo.db.stress_raw
+    if metric == "sleep":
+        raw_col = mongo.db.sleep_raw
+    elif metric == "stress":
+        raw_col = mongo.db.stress_raw
+    elif metric == "activity":
+        raw_col = mongo.db.activity_raw
+    else:
+        raw_col = mongo.db.stress_raw  # fallback no intrusivo
+
     raw_rows = raw_col.find({"sub": sub}, projection={"_id": 0, "ts": 1, "features": 1})
     for r in raw_rows:
         if r.get("ts") and isinstance(r.get("features"), dict):
@@ -524,6 +694,7 @@ def ai_simulate_metric(metric: str):
 # ---------------- Importadores CSV ----------------
 #   - sleep: CSV diario → sleep_raw
 #   - stress (CEDA): CSV por minutos o diario → agrega por día → stress_raw
+#   - activity: CSV por minutos o diario → agrega por día → activity_raw
 
 @api.post("/import/sleep/csv")
 @requires_auth
@@ -616,10 +787,7 @@ def import_sleep_csv_all_features():
 @requires_auth
 def import_stress_csv_ceda_aggregate_daily():
     """
-    Importa CSV de CEDA (estrés):
-      - Soporta datos por minuto o por día (detecta timestamp/fecha).
-      - Agrega por día calculando la media de columnas numéricas.
-      - Guarda 1 documento por día en 'stress_raw' con ts=00:00 UTC y features=medias.
+    Importa CSV de CEDA (estrés): minuto o día → medias diarias → stress_raw
     """
     if "file" not in request.files:
         return _json_err("Falta 'file'", 400)
@@ -654,7 +822,6 @@ def import_stress_csv_ceda_aggregate_daily():
     sub = g.current_user.get("sub")
     now = _now_utc()
 
-    # Agregadores por día (sumas / conteos numéricos)
     def _to_float(s):
         try:
             return float(str(s).replace(",", "."))
@@ -663,7 +830,7 @@ def import_stress_csv_ceda_aggregate_daily():
 
     agg: Dict[datetime, Dict[str, Any]] = {}
     total_rows = errors = 0
-    numeric_columns_seen = set([h for h in headers if h != date_col])
+    kept_columns: List[str] = []
 
     for row in reader:
         total_rows += 1
@@ -689,24 +856,20 @@ def import_stress_csv_ceda_aggregate_daily():
                 continue
             fv = _to_float(v)
             if fv is None:
-                # si no es numérico, no entra en media (queda fuera)
                 continue
-            agg[day]["sums"][k] = agg[day]["sums"].get(k, 0.0) + fv
-            agg[day]["counts"][k] = agg[day]["counts"].get(k, 0) + 1
+            k_norm = " ".join(str(k).split()).strip()
+            agg[day]["sums"][k_norm] = agg[day]["sums"].get(k_norm, 0.0) + fv
+            agg[day]["counts"][k_norm] = agg[day]["counts"].get(k_norm, 0) + 1
+            if k_norm not in kept_columns:
+                kept_columns.append(k_norm)
 
-    # Construir medias por día y escribir en stress_raw
     days_written = 0
-    kept_columns: List[str] = []
-
     for day, st in agg.items():
         features_avg: Dict[str, float] = {}
         for k, s in st["sums"].items():
             c = st["counts"].get(k, 0)
             if c > 0:
-                k_norm = " ".join(str(k).split()).strip()
-                features_avg[k_norm] = round(s / c, 6)
-                if k_norm not in kept_columns:
-                    kept_columns.append(k_norm)
+                features_avg[k] = round(s / c, 6)
 
         try:
             mongo.db.stress_raw.update_one(
@@ -742,7 +905,181 @@ def import_stress_csv_ceda_aggregate_daily():
         "kept_columns": kept_columns
     })
 
-# ---------------- IA scoring (sleep / stress) ----------------
+@api.post("/import/activity/csv")
+@requires_auth
+def import_activity_csv():
+    """
+    Importa CSV de Actividad:
+      - Si detecta formato 'UserExercise' → agrega por día con reglas específicas
+      - En otro caso → usa el agregador genérico (minutos/día → medias diarias)
+    Si el CSV no trae time/timestamp/datetime/date/fecha, se usará el FINAL DEL EJERCICIO:
+      endtime / end_time / fin
+    Guarda en activity_raw (ts = inicio de día, UTC).
+    """
+    if "file" not in request.files:
+        return _json_err("Falta 'file'", 400)
+    f = request.files["file"]
+    if not f or not f.filename:
+        return _json_err("Archivo vacío", 400)
+
+    try:
+        raw = f.read().decode("utf-8-sig", errors="ignore")
+    except Exception:
+        return _json_err("No se pudo leer el CSV (encoding)", 400)
+    if not raw.strip():
+        return _json_err("CSV vacío", 400)
+
+    # Leemos cabeceras una vez
+    try:
+        sniff = csv.DictReader(io.StringIO(raw))
+        headers = [h for h in (sniff.fieldnames or [])]
+        lower = [h.lower().strip() for h in headers]
+    except Exception:
+        return _json_err("No se pudo analizar cabeceras", 400)
+
+    sub = g.current_user.get("sub")
+    now = _now_utc()
+
+    # ¿Es UserExercise?
+    is_userexercise = _is_userexercise_headers(lower)
+
+    days_written = 0
+    kept_columns: List[str] = []
+    errors = 0
+    total_rows = 0
+
+    if is_userexercise:
+        # Agregador específico
+        reader = csv.DictReader(io.StringIO(raw))
+        agg = _aggregate_userexercise_daily(reader)
+        total_rows = sum(v.get("samples", 0) for v in agg.values())
+        try:
+            for day, feats in agg.items():
+                kept_columns = sorted(list({*kept_columns, *feats.keys()}))
+                mongo.db.activity_raw.update_one(
+                    {"sub": sub, "ts": day},
+                    {"$set": {
+                        "sub": sub,
+                        "ts": day,
+                        "ts_str": day.isoformat(),
+                        "features": feats,
+                        "n_samples": int(feats.get("samples", 0)),
+                        "source": "activity_userexercise_daily",
+                        "ingested_at": now
+                    }},
+                    upsert=True
+                )
+                days_written += 1
+        except Exception as e:
+            return _json_err(f"Error escribiendo agregado diario actividad (UserExercise): {e}", 500)
+
+    else:
+        # Agregador genérico con fallback a END TIME si falta fecha clásica
+        try:
+            reader = csv.DictReader(io.StringIO(raw))
+
+            # 1) intenta time/timestamp/datetime/date/fecha
+            date_col = None
+            for cand in ("time", "timestamp", "datetime", "date", "fecha"):
+                if cand in lower:
+                    date_col = headers[lower.index(cand)]
+                    break
+
+            # 2) si no, usa endtime/end_time/fin como columna temporal
+            end_col = None
+            if not date_col:
+                for cand in ("endtime", "end_time", "fin", "exercise_end"):
+                    if cand in lower:
+                        end_col = headers[lower.index(cand)]
+                        break
+
+            if not date_col and not end_col:
+                return _json_err("CSV: falta columna temporal (time/timestamp/datetime/date/fecha) y tampoco hay endtime/end_time/fin", 400)
+
+            def pick_ts_str(row):
+                # Prioridad: date_col clásico; si no, el final del ejercicio
+                return (row.get(date_col) if date_col else None) or (row.get(end_col) if end_col else None) or ""
+
+            agg: Dict[datetime, Dict[str, Any]] = {}
+
+            for row in reader:
+                total_rows += 1
+                ts_str = (pick_ts_str(row) or "").strip()
+                if not ts_str:
+                    errors += 1
+                    continue
+                ts = _parse_any_datetime(ts_str)
+                if not ts:
+                    errors += 1
+                    continue
+
+                day = datetime(ts.year, ts.month, ts.day)
+                if day not in agg:
+                    agg[day] = {"sums": {}, "counts": {}, "samples": 0}
+                agg[day]["samples"] += 1
+
+                for k in headers:
+                    # Evita sumar la columna temporal sea cual sea
+                    if (date_col and k == date_col) or (end_col and k == end_col):
+                        continue
+                    v = row.get(k)
+                    if v is None or str(v).strip() == "":
+                        continue
+                    fv = _to_float(v)
+                    if fv is None:
+                        continue
+                    k_norm = _norm_key(k)
+                    agg[day]["sums"][k_norm] = agg[day]["sums"].get(k_norm, 0.0) + fv
+                    agg[day]["counts"][k_norm] = agg[day]["counts"].get(k_norm, 0) + 1
+                    if k_norm not in kept_columns:
+                        kept_columns.append(k_norm)
+
+            for day, st in agg.items():
+                features_avg: Dict[str, float] = {}
+                for k, s in st["sums"].items():
+                    c = st["counts"].get(k, 0)
+                    if c > 0:
+                        features_avg[k] = round(s / c, 6)
+
+                mongo.db.activity_raw.update_one(
+                    {"sub": sub, "ts": day},
+                    {"$set": {
+                        "sub": sub,
+                        "ts": day,
+                        "ts_str": day.isoformat(),
+                        "features": features_avg,
+                        "n_samples": int(st["samples"]),
+                        "source": "activity_csv_daily_mean",
+                        "ingested_at": now
+                    }},
+                    upsert=True
+                )
+                days_written += 1
+
+        except Exception as e:
+            return _json_err(f"Error en importación genérica de actividad: {e}", 500)
+
+    try:
+        current_app.logger.info(
+            "[ACTIVITY_IMPORT] sub=%s userexercise=%s days=%s rows=%s kept=%s",
+            sub, is_userexercise, days_written, total_rows, len(kept_columns)
+        )
+    except Exception:
+        pass
+
+    if days_written == 0:
+        return _json_err("No se pudo generar ningún agregado diario", 400)
+
+    return _json_ok(summary={
+        "days_aggregated": days_written,
+        "total_rows": total_rows,
+        "errors": errors,
+        "kept_columns": kept_columns
+    })
+
+
+
+# ---------------- IA scoring (sleep / stress / activity) ----------------
 
 def _sleep_prompt_from_features(features: Dict[str, Any]) -> str:
     return (
@@ -762,132 +1099,33 @@ def _stress_prompt_from_features(features: Dict[str, Any]) -> str:
         "Datos:\n" + json.dumps(features, ensure_ascii=False)
     )
 
-@api.post("/ai/score/sleep/from_csv")
-@requires_auth
-def ai_score_sleep_from_csv():
-    sub = g.current_user.get("sub")
-    body = request.get_json(silent=True) or {}
-
-    if "ts_str" in body:
-        doc = mongo.db.sleep_raw.find_one({"sub": sub, "ts_str": body["ts_str"]})
-        if not doc:
-            return _json_err("No existe un registro con ese ts_str", 404)
-    elif "ts" in body:
-        dt = _parse_any_datetime(body["ts"])
-        if not dt:
-            return _json_err("ts inválido", 400)
-        start = datetime(dt.year, dt.month, dt.day)
-        end = start + timedelta(days=1) - timedelta(microseconds=1000)
-        doc = mongo.db.sleep_raw.find_one({"sub": sub, "ts": {"$gte": start, "$lte": end}})
-        if not doc:
-            return _json_err("No hay datos de ese día", 404)
-    else:
-        doc = mongo.db.sleep_raw.find_one({"sub": sub}, sort=[("ts", -1)])
-        if not doc:
-            return _json_err("No hay datos importados aún", 404)
-
-    features = doc.get("features") or {}
-    prompt = _sleep_prompt_from_features(features)
-
-    score, advice = 3, "Revisa tus hábitos de sueño."
-    try:
-        out = _gemini_generate_json(prompt, max_tokens=30000, temperature=0.8, top_p=0.9)
-        sc = int(out.get("score"))
-        adv = out.get("advice", "")
-        if 1 <= sc <= 5:
-            score, advice = sc, adv
-        else:
-            raise ValueError("score fuera de rango")
-    except Exception as e:
-        current_app.logger.warning(f"LLM error (sleep fila única): {e}")
-
-    mongo.db.measurements.update_one(
-        {"sub": sub, "type": "sleep", "ts": doc["ts"]},
-        {"$set": {
-            "sub": sub,
-            "type": "sleep",
-            "ts": doc["ts"],
-            "value": int(score),
-            "source": "ai_from_csv",
-            "advice": advice,
-            "scored_at": _now_utc(),
-        }},
-        upsert=True
+def _activity_prompt_from_features(features: Dict[str, Any]) -> str:
+    """
+    Considera campos comunes de UserExercise si aparecen:
+      - steps, active_minutes (o minutes_active), met_minutes, duration_min
+      - calories_kcal, distance_km
+      - avg_hr, max_hr
+    """
+    guide = (
+        "Eres un coach de salud. Evalúa la ACTIVIDAD FÍSICA diaria con los datos agregados (medias/sumas por día).\n"
+        "Devuelve ÚNICAMENTE JSON con esta forma exacta (sin Markdown ni ```):\n"
+        '{ "score": 3, "advice": "recomendaciones breves y concretas" }\n'
+        "Escala: 1=muy baja/sedentaria · 3=moderada · 5=óptima.\n\n"
+        "Pautas:\n"
+        "- Ten en cuenta: pasos totales, minutos activos/moderados-vigorosos, MET-minutes, duración total, calorías, distancia.\n"
+        "- Usa la FC (avg_hr / max_hr) como contexto de intensidad si está disponible.\n"
+        "- Si los datos son muy pobres o nulos, puntúa bajo y recomienda objetivos mínimos progresivos.\n"
+        "- Si el tipo de ejercicio que se hace es 'Outdoor Walk' obvia todas las columnas cuyos datos son 0 o nulos.\n"
     )
+    return guide + "\nDatos:\n" + json.dumps(features, ensure_ascii=False)
 
-    try:
-        used_keys = list((doc.get("features") or {}).keys())
-        current_app.logger.info(
-            "[AI_SCORE] metric=sleep sub=%s ts=%s ts_str=%s score=%s used_keys=%s advice=%s",
-            sub, doc["ts"].isoformat() if doc.get("ts") else None, doc.get("ts_str"),
-            int(score), ",".join(used_keys), (advice or "")[:200]
-        )
-    except Exception:
-        pass
 
-    return _json_ok(ts_str=doc.get("ts_str"), score=int(score), advice=advice, used_keys=list(features.keys()))
-
-@api.post("/ai/score/sleep/from_csv/bulk_llm")
-@requires_auth
-def ai_score_sleep_from_csv_bulk_llm():
-    if not os.environ.get("LLM_API_KEY"):
-        return _json_err("Falta LLM_API_KEY en el servidor para usar la IA", 400)
-
-    sub = g.current_user.get("sub")
-    cur = mongo.db.sleep_raw.find({"sub": sub}, projection={"_id": 0, "ts": 1, "features": 1, "ts_str": 1}).sort("ts", 1)
-
-    total = written = llm_errors = 0
-
-    for doc in cur:
-        total += 1
-        features = doc.get("features") or {}
-        prompt = _sleep_prompt_from_features(features)
-
-        score, advice = 3, "Revisa tus hábitos de sueño."
-        try:
-            out = _gemini_generate_json(prompt, max_tokens=30000, temperature=0.8, top_p=0.9)
-            sc = int(out.get("score")); adv = out.get("advice", "")
-            if 1 <= sc <= 5: score, advice = sc, adv
-            else: raise ValueError(f"score fuera de rango: {sc}")
-        except Exception as e:
-            llm_errors += 1
-            current_app.logger.warning(f"LLM bulk row error (sleep): {e}")
-
-        try:
-            used_keys = list((features or {}).keys())
-            current_app.logger.info(
-                "[AI_SCORE_BULK] metric=sleep sub=%s ts=%s ts_str=%s score=%s used_keys=%s advice=%s",
-                sub, doc["ts"].isoformat() if doc.get("ts") else None, doc.get("ts_str"),
-                int(score), ",".join(used_keys), (advice or "")[:200]
-            )
-        except Exception:
-            pass
-
-        res = mongo.db.measurements.update_one(
-            {"sub": sub, "type": "sleep", "ts": doc["ts"]},
-            {"$set": {
-                "sub": sub, "type": "sleep", "ts": doc["ts"], "value": int(score),
-                "source": "ai_from_csv_bulk_llm", "advice": advice, "scored_at": _now_utc(),
-            }},
-            upsert=True
-        )
-        if res.upserted_id or res.modified_count:
-            written += 1
-
-    return _json_ok(summary={"total_rows": total, "written_measurements": written, "llm_errors": llm_errors})
-
-@api.post("/ai/score/stress/from_csv")
-@requires_auth
-def ai_score_stress_from_csv():
-    """
-    Escoge el registro de stress_raw (CEDA agregado) por ts_str, por fecha (ts) o último;
-    puntúa con IA y escribe en measurements(type=stress).
-    """
+def _score_one_generic(raw_name: str, metric_type: str, prompt_fn):
     sub = g.current_user.get("sub")
     body = request.get_json(silent=True) or {}
 
     if "ts_str" in body:
-        doc = mongo.db.stress_raw.find_one({"sub": sub, "ts_str": body["ts_str"]})
+        doc = mongo.db[raw_name].find_one({"sub": sub, "ts_str": body["ts_str"]})
         if not doc:
             return _json_err("No existe un registro con ese ts_str", 404)
     elif "ts" in body:
@@ -896,30 +1134,30 @@ def ai_score_stress_from_csv():
             return _json_err("ts inválido", 400)
         start = datetime(dt.year, dt.month, dt.day)
         end = start + timedelta(days=1) - timedelta(microseconds=1000)
-        doc = mongo.db.stress_raw.find_one({"sub": sub, "ts": {"$gte": start, "$lte": end}})
+        doc = mongo.db[raw_name].find_one({"sub": sub, "ts": {"$gte": start, "$lte": end}})
         if not doc:
             return _json_err("No hay datos de ese día", 404)
     else:
-        doc = mongo.db.stress_raw.find_one({"sub": sub}, sort=[("ts", -1)])
+        doc = mongo.db[raw_name].find_one({"sub": sub}, sort=[("ts", -1)])
         if not doc:
             return _json_err("No hay datos importados aún", 404)
 
     features = doc.get("features") or {}
-    prompt = _stress_prompt_from_features(features)
+    prompt = prompt_fn(features)
 
-    score, advice = 3, "Revisa hábitos para reducir el estrés."
+    score, advice = 3, "Revisa tus hábitos."
     try:
         out = _gemini_generate_json(prompt, max_tokens=30000, temperature=0.8, top_p=0.9)
         sc = int(out.get("score")); adv = out.get("advice", "")
         if 1 <= sc <= 5: score, advice = sc, adv
         else: raise ValueError("score fuera de rango")
     except Exception as e:
-        current_app.logger.warning(f"LLM error (stress fila única): {e}")
+        current_app.logger.warning(f"LLM error ({metric_type} fila única): {e}")
 
     mongo.db.measurements.update_one(
-        {"sub": sub, "type": "stress", "ts": doc["ts"]},
+        {"sub": sub, "type": metric_type, "ts": doc["ts"]},
         {"$set": {
-            "sub": sub, "type": "stress", "ts": doc["ts"], "value": int(score),
+            "sub": sub, "type": metric_type, "ts": doc["ts"], "value": int(score),
             "source": "ai_from_csv", "advice": advice, "scored_at": _now_utc(),
         }},
         upsert=True
@@ -928,8 +1166,8 @@ def ai_score_stress_from_csv():
     try:
         used_keys = list((doc.get("features") or {}).keys())
         current_app.logger.info(
-            "[AI_SCORE] metric=stress sub=%s ts=%s ts_str=%s score=%s used_keys=%s advice=%s",
-            sub, doc["ts"].isoformat() if doc.get("ts") else None, doc.get("ts_str"),
+            "[AI_SCORE] metric=%s sub=%s ts=%s ts_str=%s score=%s used_keys=%s advice=%s",
+            metric_type, sub, doc["ts"].isoformat() if doc.get("ts") else None, doc.get("ts_str"),
             int(score), ",".join(used_keys), (advice or "")[:200]
         )
     except Exception:
@@ -937,23 +1175,24 @@ def ai_score_stress_from_csv():
 
     return _json_ok(ts_str=doc.get("ts_str"), score=int(score), advice=advice, used_keys=list(features.keys()))
 
-@api.post("/ai/score/stress/from_csv/bulk_llm")
-@requires_auth
-def ai_score_stress_from_csv_bulk_llm():
+def _score_bulk_generic(raw_name: str, metric_type: str, prompt_fn):
     if not os.environ.get("LLM_API_KEY"):
         return _json_err("Falta LLM_API_KEY en el servidor para usar la IA", 400)
 
     sub = g.current_user.get("sub")
-    cur = mongo.db.stress_raw.find({"sub": sub}, projection={"_id": 0, "ts": 1, "features": 1, "ts_str": 1}).sort("ts", 1)
+    cur = mongo.db[raw_name].find(
+        {"sub": sub},
+        projection={"_id": 0, "ts": 1, "features": 1, "ts_str": 1}
+    ).sort("ts", 1)
 
     total = written = llm_errors = 0
 
     for doc in cur:
         total += 1
         features = doc.get("features") or {}
-        prompt = _stress_prompt_from_features(features)
+        prompt = prompt_fn(features)
 
-        score, advice = 3, "Revisa hábitos para reducir el estrés."
+        score, advice = 3, "Revisa tus hábitos."
         try:
             out = _gemini_generate_json(prompt, max_tokens=30000, temperature=0.8, top_p=0.9)
             sc = int(out.get("score")); adv = out.get("advice", "")
@@ -961,23 +1200,23 @@ def ai_score_stress_from_csv_bulk_llm():
             else: raise ValueError(f"score fuera de rango: {sc}")
         except Exception as e:
             llm_errors += 1
-            current_app.logger.warning(f"LLM bulk row error (stress): {e}")
+            current_app.logger.warning(f"LLM bulk row error ({metric_type}): {e}")
 
         try:
             used_keys = list((features or {}).keys())
             current_app.logger.info(
-                "[AI_SCORE_BULK] metric=stress sub=%s ts=%s ts_str=%s score=%s used_keys=%s advice=%s",
-                sub, doc["ts"].isoformat() if doc.get("ts") else None, doc.get("ts_str"),
+                "[AI_SCORE_BULK] metric=%s sub=%s ts=%s ts_str=%s score=%s used_keys=%s advice=%s",
+                metric_type, sub, doc["ts"].isoformat() if doc.get("ts") else None, doc.get("ts_str"),
                 int(score), ",".join(used_keys), (advice or "")[:200]
             )
         except Exception:
             pass
 
         res = mongo.db.measurements.update_one(
-            {"sub": sub, "type": "stress", "ts": doc["ts"]},
+            {"sub": sub, "type": metric_type, "ts": doc["ts"]},
             {"$set": {
-                "sub": sub, "type": "stress", "ts": doc["ts"], "value": int(score),
-                "source": "ai_from_csv_bulk_llm", "advice": advice, "scored_at": _now_utc(),
+                "sub": sub, "type": metric_type, "ts": doc["ts"], "value": int(score),
+                "source": f"ai_from_csv_bulk_llm", "advice": advice, "scored_at": _now_utc(),
             }},
             upsert=True
         )
@@ -985,3 +1224,33 @@ def ai_score_stress_from_csv_bulk_llm():
             written += 1
 
     return _json_ok(summary={"total_rows": total, "written_measurements": written, "llm_errors": llm_errors})
+
+@api.post("/ai/score/sleep/from_csv")
+@requires_auth
+def ai_score_sleep_from_csv():
+    return _score_one_generic("sleep_raw", "sleep", _sleep_prompt_from_features)
+
+@api.post("/ai/score/sleep/from_csv/bulk_llm")
+@requires_auth
+def ai_score_sleep_from_csv_bulk_llm():
+    return _score_bulk_generic("sleep_raw", "sleep", _sleep_prompt_from_features)
+
+@api.post("/ai/score/stress/from_csv")
+@requires_auth
+def ai_score_stress_from_csv():
+    return _score_one_generic("stress_raw", "stress", _stress_prompt_from_features)
+
+@api.post("/ai/score/stress/from_csv/bulk_llm")
+@requires_auth
+def ai_score_stress_from_csv_bulk_llm():
+    return _score_bulk_generic("stress_raw", "stress", _stress_prompt_from_features)
+
+@api.post("/ai/score/activity/from_csv")
+@requires_auth
+def ai_score_activity_from_csv():
+    return _score_one_generic("activity_raw", "activity", _activity_prompt_from_features)
+
+@api.post("/ai/score/activity/from_csv/bulk_llm")
+@requires_auth
+def ai_score_activity_from_csv_bulk_llm():
+    return _score_bulk_generic("activity_raw", "activity", _activity_prompt_from_features)

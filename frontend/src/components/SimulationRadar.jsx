@@ -40,7 +40,7 @@ export default function SimulationRadar({
   const [err, setErr] = useState("");
   const [rows, setRows] = useState([]); // [{ key, label, actual, sim }]
 
-  // ------- NUEVO: selector de fecha + modal de detalle -------
+
   const [datePick, setDatePick] = useState("");
   const [dateBtnLoading, setDateBtnLoading] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);

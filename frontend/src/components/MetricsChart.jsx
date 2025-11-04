@@ -46,11 +46,43 @@ const QUICK_PRESETS = [
   { key: "525600", label: "365 días", minutes: 525600 },
 ];
 
+// Etiquetas legibles or métrica
+const LABEL_MAPS = {
+  sleep: {
+    sleep_log_entry_id: "Log del sueño",
+    overall_score: "Puntuación media",
+    revitalization_score: "Puntuación de revitalización",
+    deep_sleep_in_minutes: "Minutos de sueño profundo",
+    resting_heart_rate: "Frecuencia cardíaca en reposo",
+    restlessness: "Agitación",
+  },
+  stress: {
+    eda_level_real: "Nivel EDA (real)",
+  },
+  activity: {
+    exercise_id: "Id del ejercicio",
+    tracker_total_calories: "Calorías totales (kcal)",
+    tracker_total_steps: "Número de pasos",
+    tracker_total_distance_mm: "Distancia total (m)",
+    tracker_total_altitude_mm: "Desnivel total (m)",
+    tracker_avg_heart_rate: "Frecuencia cardíaca media",
+    tracker_peak_heart_rate: "Frecuencia cardíaca máxima",
+    tracker_cardio_load: "Carga cardiovascular"
+  },
+};
+
+function prettifyKey(k) {
+  if (!k) return "";
+  return String(k)
+    .replace(/\s+/g, " ")
+    .replace(/_/g, " ")
+    .trim()
+    .replace(/^\w/, (m) => m.toUpperCase());
+}
+
 // ---------- Tooltip ----------
 function CustomTooltip({ active, payload, label, hasOverlay }) {
   if (!active || !payload || payload.length === 0) return null;
-
-  // Solo mostramos “Simulación” si realmente hay overlay activo (ya filtrado)
   const items = payload.filter(it => {
     if (it?.dataKey === "real") return true;
     if (it?.dataKey === "sim" && hasOverlay) return true;
@@ -88,7 +120,7 @@ export default function MetricsChart({ metric, title = "Evolución", defaultMode
   const [absTo, setAbsTo] = useState(() => new Date(now));
 
   const [data, setData] = useState([]);            // [{tISO, value}]
-  const [overlay, setOverlay] = useState([]);      // [{time, value}] (crudo)
+  const [overlay, setOverlay] = useState([]);      // [{time, value}]
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
   const pollRef = useRef(null);
@@ -108,10 +140,9 @@ export default function MetricsChart({ metric, title = "Evolución", defaultMode
   const [dayDate, setDayDate] = useState("");
   const [dayLoading, setDayLoading] = useState(false);
   const [dayErr, setDayErr] = useState("");
-  const [dayDetail, setDayDetail] = useState(null); // {value, ts, advice, source, scored_at, features}
+  const [dayDetail, setDayDetail] = useState(null);
   const [adviceExpanded, setAdviceExpanded] = useState(false);
 
-  // Helpers rango actual visible
   const currentRange = useMemo(() => {
     if (mode === "absolute") {
       return { from: absFrom, to: absTo };
@@ -126,17 +157,15 @@ export default function MetricsChart({ metric, title = "Evolución", defaultMode
     try {
       let url = `/metrics/series?type=${encodeURIComponent(metric)}`;
       if (mode === "absolute") {
-        const fromISO = toISO(absFrom);
-        const toISO_  = toISO(absTo);
+        const fromISO = absFrom.toISOString();
+        const toISO_  = absTo.toISOString();
         url += `&from=${encodeURIComponent(fromISO)}&to=${encodeURIComponent(toISO_)}`;
       } else {
         url += `&minutes=${relMinutes}`;
       }
-
       const res = await apiFetch(url);
       const json = await res.json();
       if (!res.ok || json.ok === false) throw new Error(json.error || "Error cargando serie");
-
       const points = (json.points || []).map(p => ({ tISO: p.t, value: normalizeDiscrete(p.v) }));
       setData(points);
     } catch (e) {
@@ -156,7 +185,6 @@ export default function MetricsChart({ metric, title = "Evolución", defaultMode
         if (mode === "absolute_ts") {
           points = (json.forecast || []).map(it => ({ time: it.ts, value: normalizeDiscrete(it.value) }));
         } else {
-          // minutes_ahead (lo dejamos cargado por compat, pero más abajo se filtrará por rango)
           const nowMs = Date.now();
           points = (json.forecast || []).map(it => ({
             time: new Date(nowMs + (it.minute || 0) * 60 * 1000).toISOString(),
@@ -185,12 +213,10 @@ export default function MetricsChart({ metric, title = "Evolución", defaultMode
 
   useEffect(() => { loadOverlay(); /* eslint-disable-next-line */ }, [metric]);
 
-  // --- Filtrado estricto del overlay: solo tiempos que existen en la serie real + dentro del rango actual ---
   const filteredOverlay = useMemo(() => {
     if (!overlay.length || !data.length) return [];
     const fromMs = currentRange.from.getTime();
     const toMs = currentRange.to.getTime();
-
     const realTimes = new Set(
       data
         .map(p => p.tISO)
@@ -199,14 +225,11 @@ export default function MetricsChart({ metric, title = "Evolución", defaultMode
           return Number.isFinite(t) && t >= fromMs && t <= toMs;
         })
     );
-
-    // Mantén solo simulaciones cuyo timestamp exista EXACTO en la serie real (y dentro del rango)
     return overlay.filter(p => realTimes.has(p.time));
   }, [overlay, data, currentRange]);
 
-  // --- Merge para Recharts: solo existirá sim cuando hay matching exacto ---
   const merged = useMemo(() => {
-    const map = new Map(); // time -> { time, real, sim }
+    const map = new Map();
     for (const p of data) {
       const t = p.tISO;
       map.set(t, { time: t, real: p.value ?? null, sim: null });
@@ -214,9 +237,7 @@ export default function MetricsChart({ metric, title = "Evolución", defaultMode
     for (const p of filteredOverlay) {
       const t = p.time;
       const row = map.get(t);
-      if (row) {
-        row.sim = p.value ?? null; // solo se setea si existe la marca real
-      }
+      if (row) row.sim = p.value ?? null;
     }
     return Array.from(map.values()).sort((a, b) => a.time.localeCompare(b.time));
   }, [data, filteredOverlay]);
@@ -241,7 +262,6 @@ export default function MetricsChart({ metric, title = "Evolución", defaultMode
     return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }, [absTo]);
 
-  // ---- Detalle IA del punto real ----
   const fetchDetail = async (tsISO) => {
     setDetailLoading(true); setDetailErr(""); setDetail(null);
     try {
@@ -264,54 +284,95 @@ export default function MetricsChart({ metric, title = "Evolución", defaultMode
     fetchDetail(p.time);
   };
 
-  // ---- Advice por fecha ----
-  const fetchAdviceByDate = async () => {
-    if (!adviceDate) return;
-    setAdviceMsg(null);
-    setAdviceLoading(true);
-    try {
-      const r1 = await apiFetch(`/metrics/detail/by_date?type=${encodeURIComponent(metric)}&date=${encodeURIComponent(adviceDate)}`);
-      const j1 = await r1.json().catch(() => ({}));
-      if (r1.ok && j1?.ok) {
-        setSelectedTs(j1.ts || null);
-        setDetail(j1);
-        setDetailErr("");
-        setDetailOpen(true);
-        setAdviceLoading(false);
-        return;
-      }
-
-      const start = new Date(`${adviceDate}T00:00:00`);
-      const end = new Date(`${adviceDate}T23:59:59`);
-      const r2 = await apiFetch(`/metrics/series?type=${encodeURIComponent(metric)}&from=${encodeURIComponent(start.toISOString())}&to=${encodeURIComponent(end.toISOString())}`);
-      const j2 = await r2.json();
-      if (!r2.ok || j2.ok === false) {
-        throw new Error(j2?.error || "No hay datos para ese día");
-      }
-      const points = (j2.points || []).filter(p => p?.t);
-      if (points.length === 0) {
-        setAdviceMsg({ type: "warning", text: "No hay medición para esa fecha." });
-        setAdviceLoading(false);
-        return;
-      }
-      // coge el punto más cercano al mediodía
-      const noon = new Date(`${adviceDate}T12:00:00`).getTime();
-      let best = points[0];
-      let bestDiff = Math.abs(new Date(points[0].t).getTime() - noon);
-      for (const p of points) {
-        const d = Math.abs(new Date(p.t).getTime() - noon);
-        if (d < bestDiff) { best = p; bestDiff = d; }
-      }
-      const tsISO = best.t;
-      setSelectedTs(tsISO);
-      setDetailOpen(true);
-      await fetchDetail(tsISO);
-      setAdviceLoading(false);
-    } catch (e) {
-      setAdviceMsg({ type: "error", text: String(e?.message || e) });
-      setAdviceLoading(false);
+  // Etiqueta por clave
+  const labelFor = (key) => {
+    const map = LABEL_MAPS[metric] || {};
+    const base = map[key] || String(key).replace(/_/g, " ").replace(/^\w/, (m) => m.toUpperCase());
+    // Si detectamos *_mm, forzamos "(m)" en la etiqueta
+    if (metric === "activity" && /(^|_)dist(ance)?_?mm(s)?$/i.test(key)) {
+      return "Distancia (m)";
     }
+    return base;
   };
+
+const formatFeatureValue = (key, value) => {
+  if (value == null) return "—";
+  if (metric !== "activity")
+    return typeof value === "object" ? JSON.stringify(value) : String(value);
+
+  const k = String(key).toLowerCase();
+  const num = Number(value);
+
+  // --- DISTANCIA ---
+
+  // distance en milímetros → metros
+  if (/(^|_)dist(ance)?_?mm(s)?$/.test(k) || /(millimeter|millimetre)/.test(k)) {
+    return Number.isFinite(num) ? `${(num / 1000).toFixed(2)} m` : String(value);
+  }
+
+  // distance_m → ya está en metros
+  if (/(^|_)dist(ance)?_(?!(mm|mms?)$)m$/.test(k)) {
+    return Number.isFinite(num) ? `${num.toFixed(2)} m` : String(value);
+  }
+
+  // distance_km → mantener en km
+  if (/(^|_)dist(ance)?_?km$/.test(k)) {
+    return Number.isFinite(num) ? `${num.toFixed(3)} km` : String(value);
+  }
+
+  // clave genérica distance/dist → heurística (si es muy grande, mm → m)
+  if (/(^|_)distance$/.test(k) || /(^|_)dist$/.test(k)) {
+    if (Number.isFinite(num)) {
+      if (num > 10000) return `${(num / 1000).toFixed(2)} m`;
+      if (num > 100) return `${num.toFixed(2)} m`;
+      return `${num.toFixed(3)} km`;
+    }
+    return String(value);
+  }
+
+  // --- ALTITUD / DESNIVEL ---
+
+  // altitude o elevation en milímetros → metros
+  if (/(^|_)(altitude|alt|elevation)(_?mm(s)?)?$/.test(k) && /mm/.test(k)) {
+    return Number.isFinite(num) ? `${(num / 1000).toFixed(2)} m` : String(value);
+  }
+
+  // altitude/elevation_m → metros
+  if (/(^|_)(altitude|alt|elevation)_(?!(mm|mms?)$)m$/.test(k)) {
+    return Number.isFinite(num) ? `${num.toFixed(2)} m` : String(value);
+  }
+
+  // altitude/elevation_km → kilómetros
+  if (/(^|_)(altitude|alt|elevation)_?km$/.test(k)) {
+    return Number.isFinite(num) ? `${num.toFixed(3)} km` : String(value);
+  }
+
+  // genérico altitude/elevation → heurística
+  if (/(^|_)(altitude|alt|elevation)$/.test(k)) {
+    if (Number.isFinite(num)) {
+      if (num > 10000) return `${(num / 1000).toFixed(2)} m`; // mm → m
+      if (num > 100) return `${num.toFixed(2)} m`; // m
+      return `${num.toFixed(3)} km`; // km
+    }
+    return String(value);
+  }
+
+  // --- DESNIVEL POSITIVO/NEGATIVO ---
+
+  if (/(^|_)(ascent|descent|gain|loss)(_?(mm|m|km))?$/.test(k)) {
+    if (!Number.isFinite(num)) return String(value);
+    if (/mm/.test(k)) return `${(num / 1000).toFixed(2)} m`;
+    if (/km/.test(k)) return `${num.toFixed(3)} km`;
+    // si no hay unidad explícita, heurística
+    if (num > 10000) return `${(num / 1000).toFixed(2)} m`;
+    if (num > 100) return `${num.toFixed(2)} m`;
+    return `${num.toFixed(3)} km`;
+  }
+
+  // --- por defecto ---
+  return typeof value === "object" ? JSON.stringify(value) : String(value);
+};
+
 
   const fetchDayDetail = async () => {
     if (!dayDate) return;
@@ -320,7 +381,7 @@ export default function MetricsChart({ metric, title = "Evolución", defaultMode
       const r = await apiFetch(`/metrics/detail/by_date?type=${encodeURIComponent(metric)}&date=${encodeURIComponent(dayDate)}`);
       const j = await r.json();
       if (!r.ok || j.ok === false) throw new Error(j?.error || "No hay medición para esa fecha");
-      setDayDetail(j); // { value, ts, advice, source, scored_at, features }
+      setDayDetail(j);
     } catch (e) {
       setDayErr(String(e?.message || e));
     } finally {
@@ -328,14 +389,21 @@ export default function MetricsChart({ metric, title = "Evolución", defaultMode
     }
   };
 
-  const FEATURE_LABELS = {
-    sleep_log_entry_id:	"Log del sueño",
-    overall_score:	"Puntuación media",
-    revitalization_score:	"Puntuación de revitalización",
-    deep_sleep_in_minutes:	"Minutos de sueño profundo",
-    resting_heart_rate:	"Frecuencia cardíaca en reposo",
-    restlessness: "Agitación"
-  };
+  // === filtro visual de features 0/nulas en actividad ===
+  const filteredDayFeatures = useMemo(() => {
+    const feats = dayDetail?.features || null;
+    if (!feats) return null;
+    if (metric !== "activity") return feats;
+    const out = {};
+    for (const [k, v] of Object.entries(feats)) {
+      if (k === "samples") { out[k] = v; continue; }
+      if (v == null) continue;
+      if (typeof v === "number" && v === 0) continue;
+      if (typeof v === "string" && v.trim() === "") continue;
+      out[k] = v;
+    }
+    return out;
+  }, [dayDetail, metric]);
 
   return (
     <Card sx={{ mt: 3, borderRadius: 3, boxShadow: "0 6px 20px rgba(0,0,0,0.06)" }}>
@@ -345,7 +413,7 @@ export default function MetricsChart({ metric, title = "Evolución", defaultMode
           <Box sx={{ width: "100%", mt: 1 }}>
             <Grid container spacing={1.5} alignItems="center">
               <Grid item xs={12} md="auto">
-                <ToggleButtonGroup size="small" value={mode} exclusive onChange={onModeChange} sx={{ flexWrap: "wrap" }}>
+                <ToggleButtonGroup size="small" value={mode} exclusive onChange={(_e, v) => v && setMode(v)} sx={{ flexWrap: "wrap" }}>
                   <ToggleButton value="relative">Rango relativo</ToggleButton>
                   <ToggleButton value="absolute">Rango absoluto</ToggleButton>
                 </ToggleButtonGroup>
@@ -365,21 +433,6 @@ export default function MetricsChart({ metric, title = "Evolución", defaultMode
                       {QUICK_PRESETS.map(p => (<MenuItem key={p.key} value={p.minutes}>{p.label}</MenuItem>))}
                     </TextField>
                   </Grid>
-                  <Grid item xs={12} md>
-                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                      {QUICK_PRESETS.map(p => (
-                        <Button
-                          key={p.key}
-                          size="small"
-                          variant="outlined"
-                          onClick={() => onPreset(p.minutes)}
-                          sx={{ borderRadius: 2 }}
-                        >
-                          {p.label}
-                        </Button>
-                      ))}
-                    </Stack>
-                  </Grid>
                 </>
               )}
 
@@ -391,7 +444,7 @@ export default function MetricsChart({ metric, title = "Evolución", defaultMode
                       label="Desde"
                       type="datetime-local"
                       fullWidth
-                      value={absFromInput}
+                      value={(() => { const d = absFrom; const pad=(n)=>String(n).padStart(2,"0"); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}` })()}
                       onChange={(e) => setAbsFrom(new Date(e.target.value))}
                       InputLabelProps={{ shrink: true }}
                     />
@@ -402,19 +455,14 @@ export default function MetricsChart({ metric, title = "Evolución", defaultMode
                       label="Hasta"
                       type="datetime-local"
                       fullWidth
-                      value={absToInput}
+                      value={(() => { const d = absTo; const pad=(n)=>String(n).padStart(2,"0"); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}` })()}
                       onChange={(e) => setAbsTo(new Date(e.target.value))}
                       InputLabelProps={{ shrink: true }}
                     />
                   </Grid>
                   <Grid item xs={12} sm="auto">
                     <Stack direction="row" spacing={1} alignItems="center">
-                      <Button
-                        size="small"
-                        variant="contained"
-                        onClick={applyAbsolute}
-                        sx={{ borderRadius: 2, px: 2 }}
-                      >
+                      <Button size="small" variant="contained" onClick={applyAbsolute} sx={{ borderRadius: 2, px: 2 }}>
                         Aplicar
                       </Button>
                     </Stack>
@@ -440,29 +488,8 @@ export default function MetricsChart({ metric, title = "Evolución", defaultMode
             <Tooltip content={<CustomTooltip hasOverlay={hasOverlay} />} />
             <Legend />
             <ReferenceLine y={3} strokeDasharray="3 3" />
-            <Line
-              name="Real"
-              type="stepAfter"
-              dataKey="real"
-              dot={false}
-              activeDot={{ r: 5 }}
-              stroke="#1e8449"
-              strokeWidth={2}
-              connectNulls
-              isAnimationActive={false}
-            />
-            {hasOverlay && (
-              <Line
-                name="Simulación"
-                type="stepAfter"
-                dataKey="sim"
-                dot={false}
-                stroke="#e74c3c"
-                strokeWidth={2}
-                connectNulls={false}      // ⟵ NO conectar huecos
-                isAnimationActive={false}
-              />
-            )}
+            <Line name="Real" type="stepAfter" dataKey="real" dot={false} activeDot={{ r: 5 }} stroke="#1e8449" strokeWidth={2} connectNulls isAnimationActive={false} />
+            {hasOverlay && <Line name="Simulación" type="stepAfter" dataKey="sim" dot={false} stroke="#e74c3c" strokeWidth={2} connectNulls={false} isAnimationActive={false} />}
             <Brush dataKey="time" height={26} travellerWidth={10} tickFormatter={(v) => {
               try { const d = new Date(v); return d.toLocaleDateString([], { month: "2-digit", day: "2-digit" }); }
               catch { return v; }
@@ -472,102 +499,93 @@ export default function MetricsChart({ metric, title = "Evolución", defaultMode
       </CardContent>
 
       <Paper elevation={0} sx={{ mt: 2, p: 2, borderRadius: 2, border: "1px solid #eee" }}>
-  <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} alignItems={{ xs: "flex-start", md: "center" }} sx={{ mb: 1 }}>
-    <Typography variant="subtitle1" sx={{ fontWeight: 600, flex: 1 }}>
-      Datos medidos del día (para la valoración)
-    </Typography>
-    <Stack direction="row" spacing={1} alignItems="center" sx={{ width: { xs: "100%", md: "auto" } }}>
-      <TextField
-        size="small"
-        type="date"
-        label="Fecha"
-        InputLabelProps={{ shrink: true }}
-        value={dayDate}
-        onChange={(e) => setDayDate(e.target.value)}
-      />
-      <Button variant="contained" size="small" onClick={fetchDayDetail} disabled={!dayDate || dayLoading}>
-        {dayLoading ? "Cargando…" : "Ver datos del día"}
-      </Button>
-    </Stack>
-  </Stack>
-
-  {dayErr && <Alert severity="error" sx={{ mb: 1 }}>{dayErr}</Alert>}
-
-  {!dayErr && dayDetail && (
-    <Box>
-      <Grid container spacing={5} sx={{ mb: 1 }}>
-        <Grid item xs={12} md={3}>
-          <Typography variant="body2" color="text.secondary">Fecha medición</Typography>
-          <Typography variant="body1">
-            {(() => { try { return new Date(dayDetail.ts).toLocaleString(); } catch { return dayDetail.ts; } })()}
+        <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} alignItems={{ xs: "flex-start", md: "center" }} sx={{ mb: 1 }}>
+          <Typography variant="subtitle1" sx={{ fontWeight: 600, flex: 1 }}>
+            Datos medidos del día (para la valoración)
           </Typography>
-        </Grid>
-        <Grid item xs={6} md={2}>
-          <Typography variant="body2" color="text.secondary">Puntuación</Typography>
-          <Typography variant="body1">{dayDetail.value == null ? "—" : `${dayDetail.value} / 5`}</Typography>
-        </Grid>
-        <Grid item xs={6} md={2}>
-          <Typography variant="body2" color="text.secondary">Fuente</Typography>
-          <Typography variant="body1">{"Gemini"}</Typography>
-        </Grid>
-        <Grid item xs={12} md={5} sx={{ display: "flex", alignItems: "center" }}>
-          <Typography variant="body2" color="text" sx={{ mr: 1 }}>Comentario IA</Typography>
-          <IconButton size="small" onClick={() => setAdviceExpanded(s => !s)} aria-label="toggle-advice">
-            {adviceExpanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
-          </IconButton>
-        </Grid>
-      </Grid>
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ width: { xs: "100%", md: "auto" } }}>
+            <TextField size="small" type="date" label="Fecha" InputLabelProps={{ shrink: true }} value={dayDate} onChange={(e) => setDayDate(e.target.value)} />
+            <Button variant="contained" size="small" onClick={fetchDayDetail} disabled={!dayDate || dayLoading}>
+              {dayLoading ? "Cargando…" : "Ver datos del día"}
+            </Button>
+          </Stack>
+        </Stack>
 
-      <Collapse in={adviceExpanded} unmountOnExit>
-        <Box sx={{ p: 1.5, background: "#fafafa", border: "1px solid #eee", borderRadius: 1, mb: 1 }}>
-          <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-            {dayDetail.advice || "—"}
-          </Typography>
-        </Box>
-      </Collapse>
+        {dayErr && <Alert severity="error" sx={{ mb: 1 }}>{dayErr}</Alert>}
 
-      <Divider sx={{ my: 1 }} />
-      <Typography variant="subtitle2" sx={{ mb: 1 }}>Features (CSV → día seleccionado)</Typography>
+        {!dayErr && dayDetail && (
+          <Box>
+            <Grid container spacing={5} sx={{ mb: 1 }}>
+              <Grid item xs={12} md={3}>
+                <Typography variant="body2" color="text.secondary">Fecha medición</Typography>
+                <Typography variant="body1">
+                  {(() => { try { return new Date(dayDetail.ts).toLocaleString(); } catch { return dayDetail.ts; } })()}
+                </Typography>
+              </Grid>
+              <Grid item xs={6} md={2}>
+                <Typography variant="body2" color="text.secondary">Puntuación</Typography>
+                <Typography variant="body1">{dayDetail.value == null ? "—" : `${dayDetail.value} / 5`}</Typography>
+              </Grid>
+              <Grid item xs={6} md={2}>
+                <Typography variant="body2" color="text.secondary">Fuente</Typography>
+                <Typography variant="body1">Gemini</Typography>
+              </Grid>
+              <Grid item xs={12} md={5} sx={{ display: "flex", alignItems: "center" }}>
+                <Typography variant="body2" color="text" sx={{ mr: 1 }}>Comentario IA</Typography>
+                <IconButton size="small" onClick={() => setAdviceExpanded(s => !s)} aria-label="toggle-advice">
+                  {adviceExpanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                </IconButton>
+              </Grid>
+            </Grid>
 
-      {dayDetail.features && Object.keys(dayDetail.features).length > 0 ? (
-        <Box sx={{
-          border: "1px solid #eee",
-          borderRadius: 1,
-          overflow: "hidden",
-          maxHeight: 260,
-          overflowY: "auto"
-        }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead style={{ position: "sticky", top: 0, background: "#f9f9f9" }}>
-              <tr>
-                <th style={{ textAlign: "left", padding: "8px 10px", borderBottom: "1px solid #eee", width: "40%" }}>Feature</th>
-                <th style={{ textAlign: "left", padding: "8px 10px", borderBottom: "1px solid #eee" }}>Valor</th>
-              </tr>
-            </thead>
-            <tbody>
-              {Object.entries(dayDetail.features).map(([k, v]) => (
-                <tr key={k}>
-                      <td style={{ padding: "8px 10px", borderBottom: "1px solid #f1f1f1", fontFamily: "monospace" }}>
-                        {FEATURE_LABELS[k] || k}
-                      </td>                  
-                      <td style={{ padding: "8px 10px", borderBottom: "1px solid #f1f1f1" }}>
-                    {typeof v === "object" ? JSON.stringify(v) : String(v)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Box>
-      ) : (
-        <Typography variant="body2" color="text.secondary">No hay features guardadas para ese día.</Typography>
-      )}
-    </Box>
-  )}
+            <Collapse in={adviceExpanded} unmountOnExit>
+              <Box sx={{ p: 1.5, background: "#fafafa", border: "1px solid #eee", borderRadius: 1, mb: 1 }}>
+                <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+                  {dayDetail.advice || "—"}
+                </Typography>
+              </Box>
+            </Collapse>
 
-  {!dayErr && !dayDetail && (
-    <Typography variant="body2" color="text.secondary">Selecciona una fecha para ver las mediciones y el consejo de la IA de ese día.</Typography>
-  )}
-</Paper>
+            <Divider sx={{ my: 1 }} />
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>Features (CSV → día seleccionado)</Typography>
+
+            {(() => {
+              const feats = filteredDayFeatures;
+              if (!feats || Object.keys(feats).length === 0) {
+                return <Typography variant="body2" color="text.secondary">No hay features guardadas para ese día.</Typography>;
+              }
+              return (
+                <Box sx={{ border: "1px solid #eee", borderRadius: 1, overflow: "hidden", maxHeight: 260, overflowY: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead style={{ position: "sticky", top: 0, background: "#f9f9f9" }}>
+                      <tr>
+                        <th style={{ textAlign: "left", padding: "8px 10px", borderBottom: "1px solid #eee", width: "40%" }}>Feature</th>
+                        <th style={{ textAlign: "left", padding: "8px 10px", borderBottom: "1px solid #eee" }}>Valor</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(feats).map(([k, v]) => (
+                        <tr key={k}>
+                          <td style={{ padding: "8px 10px", borderBottom: "1px solid #f1f1f1", fontFamily: "monospace" }}>
+                            {labelFor(k)}
+                          </td>
+                          <td style={{ padding: "8px 10px", borderBottom: "1px solid #f1f1f1" }}>
+                            {formatFeatureValue(k, v)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </Box>
+              );
+            })()}
+          </Box>
+        )}
+
+        {!dayErr && !dayDetail && (
+          <Typography variant="body2" color="text.secondary">Selecciona una fecha para ver las mediciones y el consejo de la IA de ese día.</Typography>
+        )}
+      </Paper>
 
       <Divider />
       <CardActions sx={{ px: 2, pb: 2 }}>
