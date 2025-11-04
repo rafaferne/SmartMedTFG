@@ -51,8 +51,9 @@ function Simulacion() {
 
   const simTabs = [
     { value: "sleep",    label: "Sueño" },
-    { value: "activity", label: "Actividad física" }, // ⬅️ añadido
     { value: "stress",   label: "Estrés" },
+    { value: "activity", label: "Actividad física" },
+
   ];
 
   const handleTab = (_e, v) => { if (v !== null) setActiveMetric(v); };

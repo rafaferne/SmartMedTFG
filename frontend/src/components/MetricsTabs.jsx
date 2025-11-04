@@ -39,7 +39,7 @@ export default function MetricsTabs() {
       >
         <Tab label="Sueño" />
         <Tab label="Estrés" />
-        <Tab label="Actividad física" /> {/* ⬅️ nueva pestaña */}
+        <Tab label="Actividad física" />
       </Tabs>
 
       {/* -------- SUEÑO -------- */}
@@ -57,7 +57,7 @@ export default function MetricsTabs() {
       {/* -------- ACTIVIDAD -------- */}
       <TabPanel value={value} index={2}>
         <MetricsChart metric="activity" title="Evolución (Actividad física)" />
-        <UploadActivityCSV /> {/* ⬅️ tarjeta nueva */}
+        <UploadActivityCSV />
       </TabPanel>
     </Box>
   );
