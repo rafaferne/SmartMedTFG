@@ -14,14 +14,23 @@ export function useProfile() {
       setLoading(false);
       return;
     }
+
     setLoading(true);
     try {
       const res = await apiFetch("/me");
+
       if (res.ok) {
         const data = await res.json();
-        setProfile(data);
+        // ⚠️ Soporta las dos formas de respuesta:
+        //  - { ok: true, user: { ... } }
+        //  - { ok: true, ...camposUsuario }
+        const user = data.user || data;
+        setProfile(user);
       } else if (res.status === 401) {
         console.warn("401 en /me; vuelve a iniciar sesión si persiste.");
+      } else if (res.status === 404) {
+        console.warn("Perfil no encontrado en backend; probablemente es la primera vez que entras.");
+        setProfile(null);
       } else {
         console.error("Error /me:", res.status);
       }

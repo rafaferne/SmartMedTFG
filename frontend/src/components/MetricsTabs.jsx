@@ -3,7 +3,8 @@ import { Tabs, Tab, Box } from "@mui/material";
 import MetricsChart from "./MetricsChart";
 import UploadFitbitSleep from "./UploadFitbitSleep";
 import UploadStressCSV from "./UploadStressCSV";
-import UploadActivityCSV from "./UploadActivityCSV"; // ⬅️ nuevo
+import UploadActivityCSV from "./UploadActivityCSV";
+import UploadSpO2CSV from "./UploadSpO2CSV";
 
 function TabPanel({ value, index, children }) {
   if (value !== index) return null;
@@ -46,18 +47,21 @@ export default function MetricsTabs() {
       <TabPanel value={value} index={0}>
         <MetricsChart metric="sleep" title="Evolución (Sueño)" />
         <UploadFitbitSleep />
+        <UploadSpO2CSV />
       </TabPanel>
 
       {/* -------- ESTRÉS -------- */}
       <TabPanel value={value} index={1}>
         <MetricsChart metric="stress" title="Evolución (Estrés)" />
         <UploadStressCSV />
+        <UploadSpO2CSV />
       </TabPanel>
 
       {/* -------- ACTIVIDAD -------- */}
       <TabPanel value={value} index={2}>
         <MetricsChart metric="activity" title="Evolución (Actividad física)" />
         <UploadActivityCSV />
+        <UploadSpO2CSV />
       </TabPanel>
     </Box>
   );

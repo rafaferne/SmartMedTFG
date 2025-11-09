@@ -4,13 +4,12 @@ import {
   Stack, Button, Typography, ToggleButton, ToggleButtonGroup,
   TextField, MenuItem, Divider, Tooltip as MuiTooltip,
   Dialog, DialogTitle, DialogContent, DialogActions, Alert,
-  Grid, Box
+  Grid, Box, Paper, IconButton, Collapse
 } from "@mui/material";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine, Legend, Brush
 } from "recharts";
-import { Collapse, Paper, IconButton } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import { useApiFetch } from "../lib/apiFetch";
@@ -46,7 +45,7 @@ const QUICK_PRESETS = [
   { key: "525600", label: "365 días", minutes: 525600 },
 ];
 
-// Etiquetas legibles or métrica
+// Etiquetas legibles por métrica
 const LABEL_MAPS = {
   sleep: {
     sleep_log_entry_id: "Log del sueño",
@@ -55,19 +54,21 @@ const LABEL_MAPS = {
     deep_sleep_in_minutes: "Minutos de sueño profundo",
     resting_heart_rate: "Frecuencia cardíaca en reposo",
     restlessness: "Agitación",
+    spo2_avg: "SpO₂ medio (%)"
   },
   stress: {
     eda_level_real: "Nivel EDA (real)",
+    spo2_avg: "SpO₂ medio (%)"
   },
   activity: {
-    exercise_id: "Id del ejercicio",
     tracker_total_calories: "Calorías totales (kcal)",
     tracker_total_steps: "Número de pasos",
     tracker_total_distance_mm: "Distancia total (m)",
     tracker_total_altitude_mm: "Desnivel total (m)",
     tracker_avg_heart_rate: "Frecuencia cardíaca media",
     tracker_peak_heart_rate: "Frecuencia cardíaca máxima",
-    tracker_cardio_load: "Carga cardiovascular"
+    tracker_cardio_load: "Carga cardiovascular",
+    spo2_avg: "SpO₂ medio (%)"
   },
 };
 
@@ -292,88 +293,63 @@ export default function MetricsChart({ metric, title = "Evolución", defaultMode
     if (metric === "activity" && /(^|_)dist(ance)?_?mm(s)?$/i.test(key)) {
       return "Distancia (m)";
     }
+    if (metric === "activity" && /(altitude|alt|elevation|ascent|descent)(_?mm(s)?)?$/i.test(key)) {
+      return "Altitud/Desnivel (m)";
+    }
     return base;
   };
 
-const formatFeatureValue = (key, value) => {
-  if (value == null) return "—";
-  if (metric !== "activity")
+  // --- Conversión de distancia y altitud/desnivel al mostrar ---
+  const formatFeatureValue = (key, value) => {
+    if (value == null) return "—";
+    if (metric !== "activity") return typeof value === "object" ? JSON.stringify(value) : String(value);
+
+    const k = String(key).toLowerCase();
+    const num = Number(value);
+
+    // DISTANCIA
+    if (/(^|_)dist(ance)?_?mm(s)?$/.test(k) || /(millimeter|millimetre)/.test(k)) {
+      return Number.isFinite(num) ? `${(num / 1000).toFixed(2)} m` : String(value);
+    }
+    if (/(^|_)dist(ance)?_(?!(mm|mms?)$)m$/.test(k)) {
+      return Number.isFinite(num) ? `${num.toFixed(2)} m` : String(value);
+    }
+    if (/(^|_)dist(ance)?_?km$/.test(k)) {
+      return Number.isFinite(num) ? `${num.toFixed(3)} km` : String(value);
+    }
+    if (/(^|_)distance$/.test(k) || /(^|_)dist$/.test(k)) {
+      if (Number.isFinite(num)) {
+        if (num > 10000) return `${(num / 1000).toFixed(2)} m`;
+        if (num > 100) return `${num.toFixed(2)} m`;
+        return `${num.toFixed(3)} km`;
+      }
+      return String(value);
+    }
+
+    // ALTITUD / ELEVACIÓN / DESNIVEL
+    if (/(^|_)(altitude|alt|elevation|ascent|descent|gain|loss)(_?mm(s)?)?$/.test(k) && /mm/.test(k)) {
+      return Number.isFinite(num) ? `${(num / 1000).toFixed(2)} m` : String(value);
+    }
+    if (/(^|_)(altitude|alt|elevation|ascent|descent|gain|loss)_(?!(mm|mms?)$)m$/.test(k)) {
+      return Number.isFinite(num) ? `${num.toFixed(2)} m` : String(value);
+    }
+    if (/(^|_)(altitude|alt|elevation|ascent|descent|gain|loss)_?km$/.test(k)) {
+      return Number.isFinite(num) ? `${num.toFixed(3)} km` : String(value);
+    }
+    if (/(^|_)(altitude|alt|elevation|ascent|descent|gain|loss)$/.test(k)) {
+      if (Number.isFinite(num)) {
+        if (num > 10000) return `${(num / 1000).toFixed(2)} m`;
+        if (num > 100) return `${num.toFixed(2)} m`;
+        return `${num.toFixed(3)} km`;
+      }
+      return String(value);
+    }
+
+    // por defecto
     return typeof value === "object" ? JSON.stringify(value) : String(value);
+  };
 
-  const k = String(key).toLowerCase();
-  const num = Number(value);
-
-  // --- DISTANCIA ---
-
-  // distance en milímetros → metros
-  if (/(^|_)dist(ance)?_?mm(s)?$/.test(k) || /(millimeter|millimetre)/.test(k)) {
-    return Number.isFinite(num) ? `${(num / 1000).toFixed(2)} m` : String(value);
-  }
-
-  // distance_m → ya está en metros
-  if (/(^|_)dist(ance)?_(?!(mm|mms?)$)m$/.test(k)) {
-    return Number.isFinite(num) ? `${num.toFixed(2)} m` : String(value);
-  }
-
-  // distance_km → mantener en km
-  if (/(^|_)dist(ance)?_?km$/.test(k)) {
-    return Number.isFinite(num) ? `${num.toFixed(3)} km` : String(value);
-  }
-
-  // clave genérica distance/dist → heurística (si es muy grande, mm → m)
-  if (/(^|_)distance$/.test(k) || /(^|_)dist$/.test(k)) {
-    if (Number.isFinite(num)) {
-      if (num > 10000) return `${(num / 1000).toFixed(2)} m`;
-      if (num > 100) return `${num.toFixed(2)} m`;
-      return `${num.toFixed(3)} km`;
-    }
-    return String(value);
-  }
-
-  // --- ALTITUD / DESNIVEL ---
-
-  // altitude o elevation en milímetros → metros
-  if (/(^|_)(altitude|alt|elevation)(_?mm(s)?)?$/.test(k) && /mm/.test(k)) {
-    return Number.isFinite(num) ? `${(num / 1000).toFixed(2)} m` : String(value);
-  }
-
-  // altitude/elevation_m → metros
-  if (/(^|_)(altitude|alt|elevation)_(?!(mm|mms?)$)m$/.test(k)) {
-    return Number.isFinite(num) ? `${num.toFixed(2)} m` : String(value);
-  }
-
-  // altitude/elevation_km → kilómetros
-  if (/(^|_)(altitude|alt|elevation)_?km$/.test(k)) {
-    return Number.isFinite(num) ? `${num.toFixed(3)} km` : String(value);
-  }
-
-  // genérico altitude/elevation → heurística
-  if (/(^|_)(altitude|alt|elevation)$/.test(k)) {
-    if (Number.isFinite(num)) {
-      if (num > 10000) return `${(num / 1000).toFixed(2)} m`; // mm → m
-      if (num > 100) return `${num.toFixed(2)} m`; // m
-      return `${num.toFixed(3)} km`; // km
-    }
-    return String(value);
-  }
-
-  // --- DESNIVEL POSITIVO/NEGATIVO ---
-
-  if (/(^|_)(ascent|descent|gain|loss)(_?(mm|m|km))?$/.test(k)) {
-    if (!Number.isFinite(num)) return String(value);
-    if (/mm/.test(k)) return `${(num / 1000).toFixed(2)} m`;
-    if (/km/.test(k)) return `${num.toFixed(3)} km`;
-    // si no hay unidad explícita, heurística
-    if (num > 10000) return `${(num / 1000).toFixed(2)} m`;
-    if (num > 100) return `${num.toFixed(2)} m`;
-    return `${num.toFixed(3)} km`;
-  }
-
-  // --- por defecto ---
-  return typeof value === "object" ? JSON.stringify(value) : String(value);
-};
-
-
+  // --- Día seleccionado (features) ---
   const fetchDayDetail = async () => {
     if (!dayDate) return;
     setDayLoading(true); setDayErr(""); setDayDetail(null); setAdviceExpanded(false);
@@ -444,7 +420,7 @@ const formatFeatureValue = (key, value) => {
                       label="Desde"
                       type="datetime-local"
                       fullWidth
-                      value={(() => { const d = absFrom; const pad=(n)=>String(n).padStart(2,"0"); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}` })()}
+                      value={absFromInput}
                       onChange={(e) => setAbsFrom(new Date(e.target.value))}
                       InputLabelProps={{ shrink: true }}
                     />
@@ -455,7 +431,7 @@ const formatFeatureValue = (key, value) => {
                       label="Hasta"
                       type="datetime-local"
                       fullWidth
-                      value={(() => { const d = absTo; const pad=(n)=>String(n).padStart(2,"0"); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}` })()}
+                      value={absToInput}
                       onChange={(e) => setAbsTo(new Date(e.target.value))}
                       InputLabelProps={{ shrink: true }}
                     />
@@ -547,24 +523,35 @@ const formatFeatureValue = (key, value) => {
             </Collapse>
 
             <Divider sx={{ my: 1 }} />
-            <Typography variant="subtitle2" sx={{ mb: 1 }}>Features (CSV → día seleccionado)</Typography>
 
             {(() => {
-              const feats = filteredDayFeatures;
+              // 🔒 usar el objeto con ceros/nulos filtrados (actividad) y aplicar además el filtro de claves ocultas
+              const HIDE_KEYS = new Set(["sleep_log_entry_id", "exercise_id"]);
+
+              const feats = filteredDayFeatures ?? dayDetail?.features ?? null;
               if (!feats || Object.keys(feats).length === 0) {
-                return <Typography variant="body2" color="text.secondary">No hay features guardadas para ese día.</Typography>;
+                return <Typography variant="body2" color="text.secondary">No hay registros guardados para ese día.</Typography>;
               }
+
+              const visibleEntries = Object.entries(feats).filter(
+                ([k]) => !HIDE_KEYS.has(String(k).toLowerCase())
+              );
+
+              if (visibleEntries.length === 0) {
+                return <Typography variant="body2" color="text.secondary">No hay registros visibles tras aplicar los filtros.</Typography>;
+              }
+
               return (
                 <Box sx={{ border: "1px solid #eee", borderRadius: 1, overflow: "hidden", maxHeight: 260, overflowY: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead style={{ position: "sticky", top: 0, background: "#f9f9f9" }}>
                       <tr>
-                        <th style={{ textAlign: "left", padding: "8px 10px", borderBottom: "1px solid #eee", width: "40%" }}>Feature</th>
+                        <th style={{ textAlign: "left", padding: "8px 10px", borderBottom: "1px solid #eee", width: "40%" }}>Registros</th>
                         <th style={{ textAlign: "left", padding: "8px 10px", borderBottom: "1px solid #eee" }}>Valor</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {Object.entries(feats).map(([k, v]) => (
+                      {visibleEntries.map(([k, v]) => (
                         <tr key={k}>
                           <td style={{ padding: "8px 10px", borderBottom: "1px solid #f1f1f1", fontFamily: "monospace" }}>
                             {labelFor(k)}

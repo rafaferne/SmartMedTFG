@@ -170,10 +170,10 @@ export default function SimulationRadar({
         </Grid>
 
         <ResponsiveContainer width="100%" height={380}>
-          <RadarChart data={dataForChart} outerRadius="70%">
+          <RadarChart data={dataForChart} outerRadius="75%">
             <PolarGrid />
             <PolarAngleAxis dataKey="subject" />
-            <PolarRadiusAxis angle={30} domain={[0, 5]} tickCount={6} />
+            <PolarRadiusAxis angle={90} domain={[0, 5]} tickCount={6} />
             <Tooltip />
             <Legend />
             <Radar name="Actual" dataKey="Actual" stroke="#1e8449" fill="#1e8449" fillOpacity={0.25} />

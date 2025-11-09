@@ -1,16 +1,24 @@
 version: "3.9"
+
 services:
+  # Backend Flask
   web:
-    build: .
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
     container_name: flask_app
-    ports:
-      - "5000:5000"
-    env_file: .env
+    env_file: /backend/.env
     depends_on:
       - mongo
+    expose:
+      - "5000"
+    # Si quieres seguir accediendo directo al backend desde tu máquina:
+    ports:
+      - "5000:5000"
     volumes:
-      - .:/app
+      - ./backend:/app
 
+  # Base de datos MongoDB
   mongo:
     image: mongo:6
     container_name: mongo_db
@@ -19,6 +27,19 @@ services:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
+
+  # Frontend React + Nginx
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: frontend_app
+    depends_on:
+      - web
+    ports:
+      - "80:80"
+    # Si quieres hot-reload con Vite desde host, esto sería otro rollo;
+    # aquí asumimos build de producción.
 
 volumes:
   mongo_data:

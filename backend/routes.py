@@ -387,6 +387,15 @@ def metrics_detail():
     if raw and isinstance(raw.get("features"), dict):
         features = raw["features"]
 
+    day_start = datetime(ts.year, ts.month, ts.day)
+    day_end = day_start + timedelta(days=1) - timedelta(microseconds=1000)
+    spo2 = mongo.db.spo2_raw.find_one({"sub": sub, "ts": {"$gte": day_start, "$lte": day_end}},
+                                      projection={"_id": 0, "features": 1})
+    if spo2 and isinstance(spo2.get("features"), dict):
+        # no pisar claves existentes
+        for k, v in spo2["features"].items():
+            features.setdefault(k, v)
+
     return _json_ok(
         value=meas.get("value"),
         ts=meas.get("ts").isoformat(),
@@ -430,6 +439,14 @@ def metrics_detail_by_date():
         raw = mongo.db.activity_raw.find_one({"sub": sub, "ts": {"$gte": start, "$lte": end}}, projection={"_id": 0, "features": 1})
     if raw and isinstance(raw.get("features"), dict):
         features = raw["features"]
+    else:
+        features = {}
+
+    spo2 = mongo.db.spo2_raw.find_one({"sub": sub, "ts": {"$gte": start, "$lte": end}},
+                                      projection={"_id": 0, "features": 1})
+    if spo2 and isinstance(spo2.get("features"), dict):
+        for k, v in spo2["features"].items():
+            features.setdefault(k, v)
 
     return _json_ok(
         value=meas.get("value"),
@@ -1077,6 +1094,145 @@ def import_activity_csv():
         "kept_columns": kept_columns
     })
 
+
+@api.post("/import/spo2/csv")
+@requires_auth
+def import_spo2_csv_daily_mean():
+    """
+    Importa uno o varios CSV de SpO₂ (oxígeno en sangre) por minuto → media diaria.
+    - Acepta: "files" (lista) o "file" (único) para compatibilidad.
+    - Agrega todos los CSV en memoria y escribe una única media por día.
+    Guarda en 'spo2_raw' con features: { 'spo2_avg': <porcentaje> } y n_samples.
+    """
+    # 1) Recoger archivos (múltiple o único)
+    files = request.files.getlist("files")
+    if not files:
+        f = request.files.get("file")
+        if f:
+            files = [f]
+    if not files:
+        return _json_err("Falta 'files' o 'file'", 400)
+
+    def _to_f(s):
+        try:
+            return float(str(s).replace(",", "."))
+        except Exception:
+            return None
+
+    sub = g.current_user.get("sub")
+    now = _now_utc()
+
+    # Acumuladores globales (agregan todos los ficheros)
+    agg = {}  # day -> {"sum": x, "cnt": n}
+    total_rows = 0
+    errors = 0
+    files_count = 0
+
+    for f in files:
+        if not f or not f.filename:
+            continue
+        try:
+            raw = f.read().decode("utf-8-sig", errors="ignore")
+        except Exception:
+            errors += 1
+            continue
+        if not raw.strip():
+            errors += 1
+            continue
+
+        try:
+            reader = csv.DictReader(io.StringIO(raw))
+            headers = [h for h in (reader.fieldnames or [])]
+            lower = [h.lower().strip() for h in headers]
+        except Exception:
+            errors += 1
+            continue
+
+        # Columna temporal
+        date_col = None
+        for cand in ("time", "timestamp", "datetime", "date", "fecha"):
+            if cand in lower:
+                date_col = headers[lower.index(cand)]
+                break
+        if not date_col:
+            errors += 1
+            continue
+
+        # Columna valor SpO2
+        value_col = None
+        for i, name in enumerate(lower):
+            if any(s in name for s in ("spo2", "oxigen", "oxígeno", "oxygen", "saturation")):
+                value_col = headers[i]
+                break
+        if not value_col and len(headers) >= 2:
+            # fallback: primera no temporal
+            for h in headers:
+                if h != date_col:
+                    value_col = h
+                    break
+        if not value_col:
+            errors += 1
+            continue
+
+        files_count += 1
+
+        # Recorrido del CSV
+        for row in reader:
+            total_rows += 1
+            ts_str = (row.get(date_col) or "").strip()
+            if not ts_str:
+                errors += 1; continue
+            ts = _parse_any_datetime(ts_str)
+            if not ts:
+                errors += 1; continue
+
+            v = _to_f(row.get(value_col))
+            if v is None:
+                errors += 1; continue
+
+            day = datetime(ts.year, ts.month, ts.day)
+            st = agg.setdefault(day, {"sum": 0.0, "cnt": 0})
+            st["sum"] += v
+            st["cnt"] += 1
+
+    # Escritura por día
+    days_written = 0
+    for day, st in agg.items():
+        if st["cnt"] <= 0:
+            continue
+        avg = round(st["sum"] / st["cnt"], 3)
+        mongo.db.spo2_raw.update_one(
+            {"sub": sub, "ts": day},
+            {"$set": {
+                "sub": sub,
+                "ts": day,
+                "ts_str": day.isoformat(),
+                "features": {"spo2_avg": avg},
+                "n_samples": int(st["cnt"]),
+                "source": "spo2_csv_daily_mean",
+                "ingested_at": now
+            }},
+            upsert=True
+        )
+        days_written += 1
+
+    try:
+        current_app.logger.info(
+            "[SPO2_IMPORT] sub=%s files=%s days=%s rows=%s errors=%s",
+            sub, files_count, days_written, total_rows, errors
+        )
+    except Exception:
+        pass
+
+    if days_written == 0:
+        return _json_err("No se pudo generar ningún agregado diario", 400)
+
+    return _json_ok(summary={
+        "files": files_count,
+        "days_aggregated": days_written,
+        "total_rows": total_rows,
+        "errors": errors
+    })
 
 
 # ---------------- IA scoring (sleep / stress / activity) ----------------
