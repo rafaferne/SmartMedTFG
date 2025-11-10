@@ -1298,38 +1298,85 @@ def _score_one_generic(raw_name: str, metric_type: str, prompt_fn):
         if not doc:
             return _json_err("No hay datos importados aún", 404)
 
+    # 🔴 Comprobar que hay API key
+    if not os.environ.get("LLM_API_KEY"):
+        return _json_err(
+            "No hay clave de la IA configurada en el servidor (LLM_API_KEY).",
+            500,
+        )
+
     features = doc.get("features") or {}
     prompt = prompt_fn(features)
 
-    score, advice = 3, "Revisa tus hábitos."
     try:
-        out = _gemini_generate_json(prompt, max_tokens=30000, temperature=0.8, top_p=0.9)
-        sc = int(out.get("score")); adv = out.get("advice", "")
-        if 1 <= sc <= 5: score, advice = sc, adv
-        else: raise ValueError("score fuera de rango")
+        out = _gemini_generate_json(
+            prompt, max_tokens=30000, temperature=0.8, top_p=0.9
+        )
+        sc = int(out.get("score"))
+        adv = out.get("advice", "")
+        if not (1 <= sc <= 5):
+            raise ValueError(f"score fuera de rango: {sc}")
     except Exception as e:
-        current_app.logger.warning(f"LLM error ({metric_type} fila única): {e}")
+        msg = str(e)
+        current_app.logger.warning(f"LLM error ({metric_type} fila única): {msg}")
+
+        # Si claramente es problema de clave
+        if "API_KEY_INVALID" in msg or "API key expired" in msg:
+            return _json_err(
+                "Error en la IA: la clave de la API es inválida o ha caducado. "
+                "Habla con el administrador del sistema.",
+                500,
+            )
+
+        # Otro error genérico de la IA
+        return _json_err(
+            "No se ha podido generar la valoración automática de la IA. "
+            "Inténtalo de nuevo más tarde.",
+            500,
+        )
+
+    # Sólo llegamos aquí si la IA ha ido bien
+    score = int(sc)
+    advice = adv
 
     mongo.db.measurements.update_one(
         {"sub": sub, "type": metric_type, "ts": doc["ts"]},
-        {"$set": {
-            "sub": sub, "type": metric_type, "ts": doc["ts"], "value": int(score),
-            "source": "ai_from_csv", "advice": advice, "scored_at": _now_utc(),
-        }},
-        upsert=True
+        {
+            "$set": {
+                "sub": sub,
+                "type": metric_type,
+                "ts": doc["ts"],
+                "value": score,
+                "source": "ai_from_csv",
+                "advice": advice,
+                "scored_at": _now_utc(),
+            }
+        },
+        upsert=True,
     )
 
     try:
         used_keys = list((doc.get("features") or {}).keys())
         current_app.logger.info(
             "[AI_SCORE] metric=%s sub=%s ts=%s ts_str=%s score=%s used_keys=%s advice=%s",
-            metric_type, sub, doc["ts"].isoformat() if doc.get("ts") else None, doc.get("ts_str"),
-            int(score), ",".join(used_keys), (advice or "")[:200]
+            metric_type,
+            sub,
+            doc["ts"].isoformat() if doc.get("ts") else None,
+            doc.get("ts_str"),
+            score,
+            ",".join(used_keys),
+            (advice or "")[:200],
         )
     except Exception:
         pass
 
-    return _json_ok(ts_str=doc.get("ts_str"), score=int(score), advice=advice, used_keys=list(features.keys()))
+    return _json_ok(
+        ts_str=doc.get("ts_str"),
+        score=score,
+        advice=advice,
+        used_keys=list(features.keys()),
+    )
+
 
 def _score_bulk_generic(raw_name: str, metric_type: str, prompt_fn):
     if not os.environ.get("LLM_API_KEY"):
@@ -1356,7 +1403,15 @@ def _score_bulk_generic(raw_name: str, metric_type: str, prompt_fn):
             else: raise ValueError(f"score fuera de rango: {sc}")
         except Exception as e:
             llm_errors += 1
-            current_app.logger.warning(f"LLM bulk row error ({metric_type}): {e}")
+            msg = str(e)
+            current_app.logger.warning(f"LLM bulk row error ({metric_type}): {msg}")
+
+            if "API_KEY_INVALID" in msg or "API key expired" in msg:
+                return _json_err(
+                    "Error en la IA: la clave de la API es inválida o ha caducado. "
+                    "Habla con el administrador del sistema.",
+                    500,
+                )
 
         try:
             used_keys = list((features or {}).keys())
