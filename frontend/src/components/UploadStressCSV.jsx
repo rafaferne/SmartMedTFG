@@ -41,7 +41,6 @@ export default function UploadStressCSV({ onImported }) {
       setMsg({
         type: "success",
         text:
-          `Importado: ${json.summary.inserted} nuevos · ${json.summary.updated} actualizados · ` +
           `errores: ${json.summary.errors}. ` +
           `Valorados (IA): ${bj.summary?.written_measurements ?? 0}.`
       });
